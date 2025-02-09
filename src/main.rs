@@ -1,5 +1,6 @@
 use std::io;
 use std::fmt::{self, Display};
+use std::mem;
 
 const PUNCTS: &[char] = &[',', ';', '.', '[', ']'];
 const CALL_STACK_SIZE: usize = 10;
@@ -58,21 +59,25 @@ fn read_line() -> Result<String, io::Error> {
 
 #[derive(Debug)]
 enum MachineError {
-    SyntaxError(Location),
+    SyntaxError(Location, Option<String>),
     CannotWriteTo(Token),
     CannotWriteToMemory(Memory),
     CannotReadFrom(Token),
     InvalidDest(Token),
     UnkownRegister(String),
+    UnclosedParen(Token),
+    OutOfBounds(usize),
     ParsingError,
 }
 
 impl Display for MachineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            Self::SyntaxError(loc) => write!(f, "{loc}: Syntax error..."),
+            Self::SyntaxError(loc, s) => write!(f, "{loc}: Syntax error: {msg}", msg = if s.is_some() { s.as_ref().unwrap() } else { "???" }),
             Self::UnkownRegister(reg) => write!(f, "(?TODO?): Unknown register: {reg}"),
+            Self::OutOfBounds(addr) => write!(f, "(?TODO?): Out of bounds memory access: {addr}"),
             Self::CannotWriteTo(token) => write!(f, "{loc}: Invalid write operation destination, expected register or memory; found: {:?}", token.ty, loc = token.loc),
+            Self::UnclosedParen(token) => write!(f, "{loc}: Unclosed parenthesis: {:?}", token.ty, loc = token.loc),
             Self::CannotWriteToMemory(mem) => write!(f, "(?TODO?): Invalid write operation destination, expected register or pointer; found: {:?}", mem.ty),
             Self::CannotReadFrom(token) => write!(f, "{loc}: Invalid read operation source, expected register, memory, or constant; found: {:?}", token.ty, loc = token.loc),
             Self::InvalidDest(token) => write!(f, "{loc}: Invalid operation destination: {:?}", token.ty, loc = token.loc),
@@ -103,6 +108,12 @@ impl Memory {
     fn usz(usz: usize) -> Self {
         Self {
             ty: MemoryType::UnsizedConstant(usz)
+        }
+    }
+
+    fn ptr(addr: usize) -> Self {
+        Self {
+            ty: MemoryType::Ptr(addr)
         }
     }
 }
@@ -165,6 +176,22 @@ impl<const N: usize> Machine<N> {
             }
             _ => Err(MachineError::CannotReadFrom(token.clone()))
         }
+    }
+
+    fn parse_deref(&self, tokens: &[Token]) -> Result<Memory, MachineError> {
+        let Token { ty: TokenType::Ident(id), loc } = &tokens[0] else {
+            let loc = &tokens[0].loc;
+            return Err(MachineError::SyntaxError(loc.clone(), "Pointer arithmetic base must be a register, got a constant or keyword.".to_string().some()));
+        };
+        let Some(val) = self.get_reg(id.as_str()) else {
+            return Err(MachineError::SyntaxError(loc.clone(), "Pointer arithmetic base must be a register.".to_string().some()));
+        };
+
+        if tokens.len() > 1 {
+            todo!("Implement pointer arithmetic.");
+        }
+
+        return Ok(Memory::ptr(val));
     }
 
     fn get_reg(&self, s: &str) -> Option<usize> {
@@ -235,17 +262,23 @@ impl<const N: usize> Machine<N> {
 
                             if tokens_taken < 2 || tokens_taken == 3 || tokens_taken == 5 {
                                 // TODO: TooFewArgs
-                                return Err(MachineError::SyntaxError(loc.clone()));
+                                return Err(MachineError::SyntaxError(loc.clone(), None));
                             }
 
                             let (dest, n) = if matches!(tokens[i].ty, TokenType::Punct('[')) {
-                                todo!("Implement dereferencing pointers");
-                                // (dest, 3)
+                                i += 1;
+                                let n = tokens[i..].iter().position(|t| t.ty == TokenType::Punct(']')).ok_or(MachineError::UnclosedParen(tokens[i].clone()))?;
+
+                                if n > 1 {
+                                    todo!("Implement pointer arithmetic when dereferencing.");
+                                }
+
+                                (self.parse_deref(&tokens[i..i+n])?, n+1) // +1 for the close paren
                             }
                             else if let Ok(writable) = self.to_writable(&tokens[i], false) {
                                 (writable, 1)
                             } else {
-                                return Err(MachineError::SyntaxError(loc.clone()));
+                                return Err(MachineError::SyntaxError(loc.clone(), None));
                             };
 
                             i += n;
@@ -257,13 +290,13 @@ impl<const N: usize> Machine<N> {
                             else if let Ok(readable) = self.to_readable(&tokens[i], false) {
                                 (readable, 1)
                             } else {
-                                return Err(MachineError::SyntaxError(loc.clone()));
+                                return Err(MachineError::SyntaxError(loc.clone(), None));
                             };
                             
                             i += n;
 
-                            let cur = self.read_mem(&dest);
-                            let to_add = self.read_mem(&src);
+                            let cur = self.read_mem(&dest)?;
+                            let to_add = self.read_mem(&src)?;
                             self.write(&dest, &Memory::usz(cur + to_add))?;
                         }
                         AsmKeyword::Ret => {
@@ -280,13 +313,13 @@ impl<const N: usize> Machine<N> {
         Ok(())
     }
 
-    fn read_mem(&self, mem: &Memory) -> usize {
+    fn read_mem(&self, mem: &Memory) -> Result<usize, MachineError> {
         use MemoryType as Mt;
-        match &mem.ty {
+        Ok(match &mem.ty {
             Mt::Reg(name) => self.get_reg(name.as_str()).expect("Memory struct was invalid."),
-            Mt::Ptr(_addr) => todo!("Read ptr"),
+            Mt::Ptr(addr) => self.read::<usize, {mem::size_of::<usize>()}>(*addr)?, // TODO: is this... right? 
             Mt::UnsizedConstant(cons) => *cons
-        }
+        })
     }
 
     fn write(&mut self, dest: &Memory, src: &Memory) -> Result<(), MachineError> {
@@ -307,8 +340,8 @@ impl<const N: usize> Machine<N> {
                 todo!("Writing to register from memory");
             }
             // writing to memory
-            (Mt::Ptr(_dest_addr), Mt::UnsizedConstant(_int)) => {
-                todo!("Writing to memory");
+            (Mt::Ptr(dest_addr), Mt::UnsizedConstant(int)) => {
+                self.write_bytes(*dest_addr, &int.to_ne_bytes())?;
             }
             (Mt::Ptr(_dest_addr), Mt::Reg(_name)) => {
                 todo!("Writing from register to memory");
@@ -319,6 +352,46 @@ impl<const N: usize> Machine<N> {
             _ => unreachable!("is_writable check should prevent this.")
         }
         Ok(())
+    }
+
+    fn write_bytes(&mut self, loc: usize, bytes: &[u8]) -> Result<(), MachineError> {
+        if bytes.len() + loc >= N {
+            return Err(MachineError::OutOfBounds(loc + bytes.len()));
+        }
+
+        // TODO: learn memcpy or whatever
+        for (i, byte) in bytes.iter().enumerate() {
+            self.memory[loc + i] = *byte;
+        }
+        Ok(())
+    }
+
+    // TODO: figure out what alignment is and how to not make this
+    // code capable of crashing.
+    fn read<T, const Bytes: usize>(&self, loc: usize) -> Result<T, MachineError> {
+        let bytes = mem::size_of::<T>();
+
+        if bytes > mem::size_of::<usize>() {
+            todo!("Unimplemented, dereferencing larger than ptr size");
+        }
+        
+        if loc + bytes >= N {
+            return Err(MachineError::OutOfBounds(loc + bytes));
+        }
+
+        let memory: [u8; Bytes] = self.memory[loc..loc+bytes]
+            .try_into()
+            .map_err(
+                |_| panic!("Invalid type size in read function, got {}, but needed {}", Bytes, mem::size_of::<T>())
+            ).unwrap();
+
+        // https://users.rust-lang.org/t/transmute-doesnt-work-on-generic-types/87272
+        // FIXME: this is scary, i'd like to understand it l8r pls ty
+        let val = unsafe { mem::transmute_copy::<[u8; Bytes], T>(&memory) };
+        let _ = memory;
+        // mem::forget(memory);
+
+        return Ok(val);
     }
 
     fn read_byte(&self, loc: usize) -> Option<u8> {
@@ -502,7 +575,7 @@ fn main() {
         println!("Running the following code: \n{input}");
         
         let read_loc = 0x0;
-        println!("Byte at {read_loc:#x}: {byte:#x}", byte=machine.read_byte(read_loc).expect("Out of bounds memory access."));
+        println!("Byte at {read_loc:#x}: {byte}", byte=machine.read_byte(read_loc).expect("Out of bounds memory access."));
         println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
     // }
 }
