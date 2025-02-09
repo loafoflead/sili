@@ -258,8 +258,6 @@ impl<const N: usize> Machine<N> {
                                 .position(|t| t.ty == TokenType::Newline || t.ty == TokenType::Eof)
                                 .expect("Infinite input error! :O"); // this shouldn't ever fail
 
-                            dbg!(i, tokens_taken);
-
                             if tokens_taken < 2 || tokens_taken == 3 || tokens_taken == 5 {
                                 // TODO: TooFewArgs
                                 return Err(MachineError::SyntaxError(loc.clone(), None));
@@ -284,8 +282,14 @@ impl<const N: usize> Machine<N> {
                             i += n;
 
                             let (src, n) = if matches!(tokens[i].ty, TokenType::Punct('[')) {
-                                todo!("Implement dereferencing pointers");
-                                // (dest, 3)
+                                i += 1;
+                                let n = tokens[i..].iter().position(|t| t.ty == TokenType::Punct(']')).ok_or(MachineError::UnclosedParen(tokens[i].clone()))?;
+
+                                if n > 1 {
+                                    todo!("Implement pointer arithmetic when dereferencing.");
+                                }
+
+                                (self.parse_deref(&tokens[i..i+n])?, n+1) // +1 for the close paren
                             }
                             else if let Ok(readable) = self.to_readable(&tokens[i], false) {
                                 (readable, 1)
@@ -332,22 +336,28 @@ impl<const N: usize> Machine<N> {
                 self.set_reg(name.as_str(), *int as usize);
             }
             (Mt::Reg(name_dest), Mt::Reg(name_src)) => {
-                let src = self.get_reg(name_src.as_str()).ok_or(MachineError::UnkownRegister(name_src.clone()))?;
+                let src = self.get_reg(name_src.as_str())
+                    .ok_or(MachineError::UnkownRegister(name_src.clone()))?;
 
                 self.set_reg(name_dest.as_str(), src);
             }
-            (Mt::Reg(_name_dest), Mt::Ptr(_src_addr)) => {
-                todo!("Writing to register from memory");
+            (Mt::Reg(name_dest), Mt::Ptr(src_addr)) => {
+                let val = self.read::<usize, {mem::size_of::<usize>()}>(*src_addr)?;
+                self.set_reg(name_dest.as_str(), val);
             }
             // writing to memory
             (Mt::Ptr(dest_addr), Mt::UnsizedConstant(int)) => {
                 self.write_bytes(*dest_addr, &int.to_ne_bytes())?;
             }
-            (Mt::Ptr(_dest_addr), Mt::Reg(_name)) => {
-                todo!("Writing from register to memory");
+            (Mt::Ptr(dest_addr), Mt::Reg(name_src)) => {
+                let src = self.get_reg(name_src.as_str())
+                    .ok_or(MachineError::UnkownRegister(name_src.clone()))?;
+
+                self.write_bytes(*dest_addr, &src.to_ne_bytes())?;
             }
-            (Mt::Ptr(_dest_addr), Mt::Ptr(_src_addr)) => {
-                todo!("Writing from memory to memory");
+            (Mt::Ptr(dest_addr), Mt::Ptr(src_addr)) => {
+                let val = self.read::<usize, {mem::size_of::<usize>()}>(*src_addr)?;
+                self.write_bytes(*dest_addr, &val.to_ne_bytes())?;
             }
             _ => unreachable!("is_writable check should prevent this.")
         }
@@ -413,8 +423,8 @@ impl Ast {
         let string = text.to_string();
         let chars = string.chars().collect::<Vec<char>>();
 
-        let mut line = 0;
-        let mut column = 0;
+        let mut line = 1;
+        let mut column = 1;
 
         let mut tokens: Vec<Token> = vec![];
 
@@ -431,7 +441,7 @@ impl Ast {
                     buf.push(c);
                 }
             }
-            else if c.is_whitespace() && !buf.trim().is_empty() {
+            else if c.is_whitespace() {
                 if c == '\n' {
                     // TODO: extract this horrible logic :( i don't like repeating it
                     if !buf.trim().is_empty() {
@@ -442,7 +452,7 @@ impl Ast {
                     line += 1;
                     column = 0;
                 }
-                else {
+                else if !buf.trim().is_empty() {
                     tokens.push(Token::new(buf.as_str().trim(), line, column));
                 }
                 buf.clear();
@@ -564,7 +574,12 @@ fn main() {
 
     // loop {
         let reg = "rin";
-        let input = "add [rout] 12\nadd rin rout\nret";//read_line().expect("Realistically a really bad error.");
+        let input = 
+"add rout 12
+add [rout] 3
+add rin [rout]
+ret"
+;//read_line().expect("Realistically a really bad error.");
 
         println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
 
@@ -574,7 +589,7 @@ fn main() {
 
         println!("Running the following code: \n{input}");
         
-        let read_loc = 0x0;
+        let read_loc = 12;
         println!("Byte at {read_loc:#x}: {byte}", byte=machine.read_byte(read_loc).expect("Out of bounds memory access."));
         println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
     // }
