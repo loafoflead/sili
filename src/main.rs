@@ -1,7 +1,7 @@
 use std::io;
 use std::fmt::{self, Display};
 
-const PUNCTS: &[char] = &[',', ';', '.'];
+const PUNCTS: &[char] = &[',', ';', '.', '[', ']'];
 const CALL_STACK_SIZE: usize = 10;
 const INSTRUCTION_START: usize = 0;
 
@@ -491,7 +491,7 @@ fn main() {
 
     // loop {
         let reg = "rin";
-        let input = "add rout 12\nadd rin rout\nret";//read_line().expect("Realistically a really bad error.");
+        let input = "add [rout] 12\nadd rin rout\nret";//read_line().expect("Realistically a really bad error.");
 
         println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
 
