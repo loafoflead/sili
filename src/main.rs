@@ -2,9 +2,39 @@ use std::io;
 use std::fmt::{self, Display};
 use std::mem;
 
-const PUNCTS: &[char] = &[',', ';', '.', '[', ']'];
+const PUNCTS: &[char] = &[':', ';', '.', '[', ']'];
 const CALL_STACK_SIZE: usize = 10;
 const INSTRUCTION_START: usize = 0;
+
+type Unit = usize;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[repr(usize)]
+enum Bytecode {
+    AddUsizeToMem,
+    AddUsizeToReg,
+    AddRegToReg,
+    AddRegToMem,
+    AddMemToReg,
+    AddMemToMem,
+}
+
+// impl TryFrom<Unit> for Bytecode {
+//     type Error = String;
+
+//     fn try_from(u: Unit) -> Result<Self, Self::Error> {
+//         if u > Self::AddMemToMem as Unit {
+//             return Err(String::from("Invalid operation"));
+//         }
+//         Ok(u as Self)
+//     }
+// }
+
+impl From<Unit> for Bytecode {
+    fn from(u: Unit) -> Self {
+        u.try_into().unwrap()
+    }
+}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum AsmKeyword {
@@ -32,14 +62,6 @@ impl AsmKeyword {
             "ret" => Self::Ret,
             _ => return None,
         }.some()
-    }
-
-    fn to_bytecode(&self) -> u8 {
-        match self {
-            Self::Mov => 1,
-            Self::Add => 2,
-            Self::Ret => 3,
-        }
     }
 }
 
@@ -122,7 +144,7 @@ impl Memory {
 enum MemoryType {
     Reg(String),
     Ptr(usize),
-    UnsizedConstant(usize),
+    UnsizedConstant(Unit),
 }
 
 // Virtual machine ish thing
@@ -131,11 +153,11 @@ struct Machine<const N: usize> {
     call_stack: [usize; CALL_STACK_SIZE],
     call_depth: usize,
     /// Instruction ptr
-    rip: usize, 
-    rin: usize,
-    rout: usize,
-    r1: usize,
-    r2: usize,
+    rip: Unit, 
+    rin: Unit,
+    rout: Unit,
+    r1: Unit,
+    r2: Unit,
 }
 
 impl<const N: usize> Machine<N> {
@@ -194,7 +216,7 @@ impl<const N: usize> Machine<N> {
         return Ok(Memory::ptr(val));
     }
 
-    fn get_reg(&self, s: &str) -> Option<usize> {
+    fn get_reg(&self, s: &str) -> Option<Unit> {
         match s {
             "rip" => self.rip,
             "rin" => self.rin,
@@ -238,7 +260,7 @@ impl<const N: usize> Machine<N> {
             string_exit: '>',
         };
         let tokens = ast.parse(code).ok_or(MachineError::ParsingError)?;
-        let mut bytecode: Vec<u8> = vec![];
+        let mut bytecode: Vec<Unit> = vec![];
 
         let mut i = 0;
 
@@ -247,6 +269,7 @@ impl<const N: usize> Machine<N> {
             match ty {
                 T::Keyword(kw) => {
                     i += 1;
+
                     match kw {
                         AsmKeyword::Mov => todo!("mov"),
                         // Accepted syntax:
@@ -299,13 +322,17 @@ impl<const N: usize> Machine<N> {
                             
                             i += n;
 
-                            let cur = self.read_mem(&dest)?;
-                            let to_add = self.read_mem(&src)?;
-                            self.write(&dest, &Memory::usz(cur + to_add))?;
+                            bytecode.push(self.add_args_to_bytecode(dest, src)? as Unit);
+                            // let cur = self.read_mem(&dest)?;
+                            // let to_add = self.read_mem(&src)?;
+                            // self.write(&dest, &Memory::usz(cur + to_add))?;
                         }
-                        AsmKeyword::Ret => {
-                            bytecode.push(kw.to_bytecode());
-                        }
+                        AsmKeyword::Ret => ()
+                    }
+                }
+                T::Ident(ident) => {
+                    if tokens[i+1].ty == TokenType::Punct(':') {
+                        todo!("Parse routine labels");
                     }
                 }
                 T::Newline => i += 1,
@@ -317,12 +344,49 @@ impl<const N: usize> Machine<N> {
         Ok(())
     }
 
+    fn run_bytecode(&mut self, bytecode: &[Unit]) {
+        for byte in bytecode {
+            use Bytecode as B;
+            let instruction: Bytecode = (*byte).try_into().expect("Invalid bytecode provided.");
+
+            match instruction {
+                _ => todo!("guh"),
+            }
+        }
+    }
+
     fn read_mem(&self, mem: &Memory) -> Result<usize, MachineError> {
         use MemoryType as Mt;
         Ok(match &mem.ty {
             Mt::Reg(name) => self.get_reg(name.as_str()).expect("Memory struct was invalid."),
             Mt::Ptr(addr) => self.read::<usize, {mem::size_of::<usize>()}>(*addr)?, // TODO: is this... right? 
             Mt::UnsizedConstant(cons) => *cons
+        })
+    }
+
+    fn add_args_to_bytecode(&self, dest: Memory, src: Memory) -> Result<Bytecode, MachineError> {
+        use MemoryType as Mt;
+        Ok(match (&dest.ty, &src.ty) {
+            (Mt::Reg(name), Mt::UnsizedConstant(int)) => {
+                Bytecode::AddUsizeToReg
+            }
+            (Mt::Reg(name_dest), Mt::Reg(name_src)) => {
+                Bytecode::AddRegToReg
+            }
+            (Mt::Reg(name_dest), Mt::Ptr(src_addr)) => {
+                Bytecode::AddMemToReg
+            }
+            // writing to memory
+            (Mt::Ptr(dest_addr), Mt::UnsizedConstant(int)) => {
+                Bytecode::AddUsizeToMem
+            }
+            (Mt::Ptr(dest_addr), Mt::Reg(name_src)) => {
+                Bytecode::AddRegToMem
+            }
+            (Mt::Ptr(dest_addr), Mt::Ptr(src_addr)) => {
+                Bytecode::AddMemToMem
+            }
+            _ => return Err(MachineError::CannotWriteToMemory(dest.clone())),
         })
     }
 
@@ -378,7 +442,7 @@ impl<const N: usize> Machine<N> {
 
     // TODO: figure out what alignment is and how to not make this
     // code capable of crashing.
-    fn read<T, const Bytes: usize>(&self, loc: usize) -> Result<T, MachineError> {
+    fn read<T, const BYTES: usize>(&self, loc: usize) -> Result<T, MachineError> {
         let bytes = mem::size_of::<T>();
 
         if bytes > mem::size_of::<usize>() {
@@ -389,15 +453,15 @@ impl<const N: usize> Machine<N> {
             return Err(MachineError::OutOfBounds(loc + bytes));
         }
 
-        let memory: [u8; Bytes] = self.memory[loc..loc+bytes]
+        let memory: [u8; BYTES] = self.memory[loc..loc+bytes]
             .try_into()
             .map_err(
-                |_| panic!("Invalid type size in read function, got {}, but needed {}", Bytes, mem::size_of::<T>())
+                |_| panic!("Invalid type size in read function, got {}, but needed {}", BYTES, mem::size_of::<T>())
             ).unwrap();
 
         // https://users.rust-lang.org/t/transmute-doesnt-work-on-generic-types/87272
         // FIXME: this is scary, i'd like to understand it l8r pls ty
-        let val = unsafe { mem::transmute_copy::<[u8; Bytes], T>(&memory) };
+        let val = unsafe { mem::transmute_copy::<[u8; BYTES], T>(&memory) };
         let _ = memory;
         // mem::forget(memory);
 
@@ -575,10 +639,13 @@ fn main() {
     // loop {
         let reg = "rin";
         let input = 
-"add rout 12
-add [rout] 3
-add rin [rout]
-ret"
+"
+entry:
+    add rout 12
+    add [rout] 3
+    add rin [rout]
+    ret
+"
 ;//read_line().expect("Realistically a really bad error.");
 
         println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
