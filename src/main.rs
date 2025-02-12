@@ -8,16 +8,12 @@ const INSTRUCTION_START: usize = 0;
 
 type Unit = usize;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-#[repr(usize)]
-enum Bytecode {
-    AddUsizeToMem,
-    AddUsizeToReg,
-    AddRegToReg,
-    AddRegToMem,
-    AddMemToReg,
-    AddMemToMem,
-}
+const REGISTER_COUNT: Unit = 5;
+
+const ADD_REG_USIZE: Unit = 5;
+const ADD_REG_USIZE_END: Unit = ADD_REG_USIZE + REGISTER_COUNT;
+
+
 
 // impl TryFrom<Unit> for Bytecode {
 //     type Error = String;
@@ -29,12 +25,6 @@ enum Bytecode {
 //         Ok(u as Self)
 //     }
 // }
-
-impl From<Unit> for Bytecode {
-    fn from(u: Unit) -> Self {
-        u.try_into().unwrap()
-    }
-}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum AsmKeyword {
@@ -90,6 +80,7 @@ enum MachineError {
     UnclosedParen(Token),
     OutOfBounds(usize),
     ParsingError,
+    MachineCodeError,
 }
 
 impl Display for MachineError {
@@ -104,6 +95,7 @@ impl Display for MachineError {
             Self::CannotReadFrom(token) => write!(f, "{loc}: Invalid read operation source, expected register, memory, or constant; found: {:?}", token.ty, loc = token.loc),
             Self::InvalidDest(token) => write!(f, "{loc}: Invalid operation destination: {:?}", token.ty, loc = token.loc),
             Self::ParsingError => todo!("Implement parsing error handling."),
+            Self::MachineCodeError => write!(f, "'fraid you're a little screwed here;"),
         }
     }
 }
@@ -140,11 +132,55 @@ impl Memory {
     }
 }
 
+type MachineResult<T> = Result<T, MachineError>;
+
 #[derive(Debug, Clone)]
 enum MemoryType {
     Reg(String),
     Ptr(usize),
     UnsizedConstant(Unit),
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum Register {
+    Rzero,
+    Rone,
+    Rtwo,
+    Rip,
+    Rin,
+    Rout,
+}
+
+impl From<Register> for usize {
+    fn from(u: Register) -> Self {
+        match u {
+            Register::Rzero => 0,
+            Register::Rone => 1,
+            Register::Rtwo => 2,
+            Register::Rip => 3,
+            Register::Rin => 4,
+            Register::Rout => 5,
+        }
+    }
+}
+
+impl Register {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "rip" => Self::Rip,
+            "rin" => Self::Rin,
+            "rout" => Self::Rout,
+            "r0" => Self::Rzero,
+            "r1" => Self::Rone,
+            "r2" => Self::Rtwo,
+            _ => return None,
+        }.some()
+    }
+
+    fn bytecode(&self) -> usize {
+        (*self).into()
+    }
 }
 
 // Virtual machine ish thing
@@ -156,6 +192,7 @@ struct Machine<const N: usize> {
     rip: Unit, 
     rin: Unit,
     rout: Unit,
+    r0: Unit,
     r1: Unit,
     r2: Unit,
 }
@@ -168,14 +205,14 @@ impl<const N: usize> Machine<N> {
             memory: [0u8; N],
             call_stack,
             call_depth: 0,
-            rip: INSTRUCTION_START, rin: 0, rout: 0, r1: 0, r2: 0,
+            rip: INSTRUCTION_START, rin: 0, rout: 0, r0: 0, r1: 0, r2: 0,
         }
     }
 
     fn to_writable(&self, token: &Token, deref: bool) -> Result<Memory, MachineError> {
         match &token.ty {
             TokenType::Ident(name) => {
-                let _ptr = self.get_reg(name.as_str()).ok_or_else(|| todo!("Implement constants."))?;
+                let _ptr = self.get_reg_value(name.as_str()).ok_or_else(|| todo!("Implement constants."))?;
                 if deref { todo!("Implement dereferencing ptrs."); }
                 // just a matter of using the value of get_reg i guess.
 
@@ -188,7 +225,7 @@ impl<const N: usize> Machine<N> {
     fn to_readable(&self, token: &Token, deref: bool) -> Result<Memory, MachineError> {
         match &token.ty {
             TokenType::Ident(name) => {
-                let _ptr = self.get_reg(name.as_str()).ok_or_else(|| todo!("Implement constants."))?;
+                let _ptr = self.get_reg_value(name.as_str()).ok_or_else(|| todo!("Implement constants."))?;
                 if deref { todo!("Implement dereferencing ptrs."); }
 
                 Ok(Memory::reg(name.as_str()))
@@ -205,7 +242,7 @@ impl<const N: usize> Machine<N> {
             let loc = &tokens[0].loc;
             return Err(MachineError::SyntaxError(loc.clone(), "Pointer arithmetic base must be a register, got a constant or keyword.".to_string().some()));
         };
-        let Some(val) = self.get_reg(id.as_str()) else {
+        let Some(val) = self.get_reg_value(id.as_str()) else {
             return Err(MachineError::SyntaxError(loc.clone(), "Pointer arithmetic base must be a register.".to_string().some()));
         };
 
@@ -216,28 +253,50 @@ impl<const N: usize> Machine<N> {
         return Ok(Memory::ptr(val));
     }
 
-    fn get_reg(&self, s: &str) -> Option<Unit> {
-        match s {
-            "rip" => self.rip,
-            "rin" => self.rin,
-            "rout" => self.rout,
-            "r1" => self.r1,
-            "r2" => self.r2,
-            _ => return None,
+    fn reg_to_bytecode(&self, s: &str) -> Option<Unit> {
+        let reg = Register::from_str(s)?;
+        reg.bytecode()
+    }
+
+    fn get_reg_value(&self, s: &str) -> Option<usize> {
+        let reg = Register::from_str(s)?;
+        use Register as Reg;
+        match reg {
+            Reg::Rzero => self.r0,
+            Reg::Rone => self.r1,
+            Reg::Rtwo => self.r2,
+            Reg::Rin => self.rin,
+            Reg::Rout => self.rout,
+            Reg::Rip => self.rip,
         }.some()
     }
 
     // https://doc.rust-lang.org/std/mem/fn.transmute.html
     fn set_reg(&mut self, s: &str, val: usize) -> Option<()> {
-        *(match s {
-            "rip" => &mut self.rip,
-            "rin" => &mut self.rin,
-            "rout" => &mut self.rout,
-            "r1" => &mut self.r1,
-            "r2" => &mut self.r2,
-            _ => return None,
+        let reg = Register::from_str(s)?;
+        use Register as Reg;
+        *(match reg {
+            Reg::Rzero => &mut self.r0,
+            Reg::Rone => &mut self.r1,
+            Reg::Rtwo => &mut self.r2,
+            Reg::Rin => &mut self.rin,
+            Reg::Rout => &mut self.rout,
+            Reg::Rip => &mut self.rip,
         }) = val;
-        return Some(());
+        Some(())
+    }
+
+    fn set_reg_idx(&mut self, reg: usize, val: Unit) -> MachineResult<()> {
+        use Register as Reg;
+        *(match reg.try_into()? {
+            Reg::Rzero => &mut self.r0,
+            Reg::Rone => &mut self.r1,
+            Reg::Rtwo => &mut self.r2,
+            Reg::Rin => &mut self.rin,
+            Reg::Rout => &mut self.rout,
+            Reg::Rip => &mut self.rip,
+        }) = val;
+        Ok(())
     }
 
     fn assert_is_reg(&self, token: &Token) -> Result<(), MachineError> {
@@ -245,7 +304,7 @@ impl<const N: usize> Machine<N> {
             return Err(MachineError::InvalidDest(token.clone()));
         };
 
-        if self.get_reg(ident).is_none() {
+        if self.get_reg_value(ident).is_none() {
             return Err(MachineError::InvalidDest(token.clone()));
         }
 
@@ -253,7 +312,7 @@ impl<const N: usize> Machine<N> {
     }
 
     /// Read some assembly code and place it into memory
-    fn assemble(&mut self, code: impl ToString) -> Result<(), MachineError> {
+    fn assemble(&mut self, code: impl ToString) -> Result<Vec<Unit>, MachineError> {
         let ast = Ast {
             puncts: PUNCTS,
             string_enter: '<',
@@ -322,7 +381,7 @@ impl<const N: usize> Machine<N> {
                             
                             i += n;
 
-                            bytecode.push(self.add_args_to_bytecode(dest, src)? as Unit);
+                            bytecode.append(&mut self.add_args_to_bytecode(dest, src)?);
                             // let cur = self.read_mem(&dest)?;
                             // let to_add = self.read_mem(&src)?;
                             // self.write(&dest, &Memory::usz(cur + to_add))?;
@@ -341,51 +400,57 @@ impl<const N: usize> Machine<N> {
             }
         }
 
-        Ok(())
+        Ok(bytecode)
     }
 
-    fn run_bytecode(&mut self, bytecode: &[Unit]) {
-        for byte in bytecode {
-            use Bytecode as B;
-            let instruction: Bytecode = (*byte).try_into().expect("Invalid bytecode provided.");
-
+    fn run_bytecode(&mut self, bytecode: &[Unit]) -> MachineResult<()> {
+        let mut i = 0;
+        while let Some(instruction) = bytecode.get(i) {
             match instruction {
-                _ => todo!("guh"),
+                0..ADD_REG_USIZE => todo!("Instructions 0-ADD"),
+
+                ADD_REG_USIZE..ADD_REG_USIZE_END => {
+                    let reg = instruction - ADD_REG_USIZE;
+                    self.set_reg_idx(reg as usize, *bytecode.get(i + 1).ok_or(MachineError::MachineCodeError)?)?;
+                }
+
+                val => todo!("Range {val} onwards..."),
             }
         }
+        Ok(())
     }
 
     fn read_mem(&self, mem: &Memory) -> Result<usize, MachineError> {
         use MemoryType as Mt;
         Ok(match &mem.ty {
-            Mt::Reg(name) => self.get_reg(name.as_str()).expect("Memory struct was invalid."),
+            Mt::Reg(name) => self.get_reg_value(name.as_str()).expect("Memory struct was invalid."),
             Mt::Ptr(addr) => self.read::<usize, {mem::size_of::<usize>()}>(*addr)?, // TODO: is this... right? 
             Mt::UnsizedConstant(cons) => *cons
         })
     }
 
-    fn add_args_to_bytecode(&self, dest: Memory, src: Memory) -> Result<Bytecode, MachineError> {
+    fn add_args_to_bytecode(&self, dest: Memory, src: Memory) -> Result<Vec<Unit>, MachineError> {
         use MemoryType as Mt;
         Ok(match (&dest.ty, &src.ty) {
             (Mt::Reg(name), Mt::UnsizedConstant(int)) => {
-                Bytecode::AddUsizeToReg
+                vec![ADD_REG_USIZE + self.reg_to_bytecode(name).ok_or(MachineError::UnkownRegister(name.clone()))?, *int]
             }
-            (Mt::Reg(name_dest), Mt::Reg(name_src)) => {
-                Bytecode::AddRegToReg
-            }
-            (Mt::Reg(name_dest), Mt::Ptr(src_addr)) => {
-                Bytecode::AddMemToReg
-            }
-            // writing to memory
-            (Mt::Ptr(dest_addr), Mt::UnsizedConstant(int)) => {
-                Bytecode::AddUsizeToMem
-            }
-            (Mt::Ptr(dest_addr), Mt::Reg(name_src)) => {
-                Bytecode::AddRegToMem
-            }
-            (Mt::Ptr(dest_addr), Mt::Ptr(src_addr)) => {
-                Bytecode::AddMemToMem
-            }
+            // (Mt::Reg(name_dest), Mt::Reg(name_src)) => {
+            //     Bytecode::AddRegToReg(name_dest)
+            // }
+            // (Mt::Reg(name_dest), Mt::Ptr(src_addr)) => {
+            //     Bytecode::AddMemToReg(name_dest)
+            // }
+            // // writing to memory
+            // (Mt::Ptr(dest_addr), Mt::UnsizedConstant(int)) => {
+            //     Bytecode::AddUsizeToMem
+            // }
+            // (Mt::Ptr(dest_addr), Mt::Reg(name_src)) => {
+            //     Bytecode::AddRegToMem
+            // }
+            // (Mt::Ptr(dest_addr), Mt::Ptr(src_addr)) => {
+            //     Bytecode::AddMemToMem
+            // }
             _ => return Err(MachineError::CannotWriteToMemory(dest.clone())),
         })
     }
@@ -400,7 +465,7 @@ impl<const N: usize> Machine<N> {
                 self.set_reg(name.as_str(), *int as usize);
             }
             (Mt::Reg(name_dest), Mt::Reg(name_src)) => {
-                let src = self.get_reg(name_src.as_str())
+                let src = self.get_reg_value(name_src.as_str())
                     .ok_or(MachineError::UnkownRegister(name_src.clone()))?;
 
                 self.set_reg(name_dest.as_str(), src);
@@ -414,7 +479,7 @@ impl<const N: usize> Machine<N> {
                 self.write_bytes(*dest_addr, &int.to_ne_bytes())?;
             }
             (Mt::Ptr(dest_addr), Mt::Reg(name_src)) => {
-                let src = self.get_reg(name_src.as_str())
+                let src = self.get_reg_value(name_src.as_str())
                     .ok_or(MachineError::UnkownRegister(name_src.clone()))?;
 
                 self.write_bytes(*dest_addr, &src.to_ne_bytes())?;
@@ -639,25 +704,27 @@ fn main() {
     // loop {
         let reg = "rin";
         let input = 
+// entry:
 "
-entry:
     add rout 12
-    add [rout] 3
-    add rin [rout]
-    ret
 "
+    // add [rout] 3
+    // add rin [rout]
+    // ret
 ;//read_line().expect("Realistically a really bad error.");
 
-        println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
+        println!("Register at {reg}: {byte}", byte=machine.get_reg_value(reg).expect("Tried to read unknown register"));
 
-        if let Err(e) = machine.assemble(input) {
-            println!("Error reading input: {}", e);
-        }
+        let Ok(bytecode) = machine.assemble(input) else {
+            panic!("beuh");
+        };
 
-        println!("Running the following code: \n{input}");
+        println!("Running the following code: \n{bytecode:?}");
+
+        machine.run_bytecode(bytecode.as_slice());
         
         let read_loc = 12;
         println!("Byte at {read_loc:#x}: {byte}", byte=machine.read_byte(read_loc).expect("Out of bounds memory access."));
-        println!("Register at {reg}: {byte}", byte=machine.get_reg(reg).expect("Tried to read unknown register"));
+        println!("Register at {reg}: {byte}", byte=machine.get_reg_value(reg).expect("Tried to read unknown register"));
     // }
 }
