@@ -144,24 +144,33 @@ enum MemoryType {
 #[derive(Debug, Clone, Copy)]
 #[repr(usize)]
 enum Register {
-    Rzero,
-    Rone,
-    Rtwo,
-    Rip,
-    Rin,
-    Rout,
+    Rzero = 0,
+    Rone = 1,
+    Rtwo = 2,
+    Rip = 3,
+    Rin = 4,
+    Rout = 5,
 }
 
 impl From<Register> for usize {
     fn from(u: Register) -> Self {
-        match u {
-            Register::Rzero => 0,
-            Register::Rone => 1,
-            Register::Rtwo => 2,
-            Register::Rip => 3,
-            Register::Rin => 4,
-            Register::Rout => 5,
-        }
+        return u as usize;
+    }
+}
+
+impl TryFrom<usize> for Register {
+    type Error = MachineError;
+
+    fn try_from(u: usize) -> Result<Self, Self::Error> {
+        Ok(match u {
+             0 => Register::Rzero,
+             1 => Register::Rone,
+             2 => Register::Rtwo,
+             3 => Register::Rip,
+             4 => Register::Rin,
+             5 => Register::Rout,
+             _ => return Err(MachineError::UnkownRegister(format!("n°{u}"))),
+        })
     }
 }
 
@@ -207,6 +216,18 @@ impl<const N: usize> Machine<N> {
             call_depth: 0,
             rip: INSTRUCTION_START, rin: 0, rout: 0, r0: 0, r1: 0, r2: 0,
         }
+    }
+
+    fn print_registers(&self) {
+        println!(
+            "Registers: r0: {}, r1: {}, r2: {}, rip: {}, rin: {}, rout: {}",
+            self.r0,
+            self.r1,
+            self.r2,
+            self.rip,
+            self.rin,
+            self.rout,
+        );
     }
 
     fn to_writable(&self, token: &Token, deref: bool) -> Result<Memory, MachineError> {
@@ -255,7 +276,7 @@ impl<const N: usize> Machine<N> {
 
     fn reg_to_bytecode(&self, s: &str) -> Option<Unit> {
         let reg = Register::from_str(s)?;
-        reg.bytecode()
+        reg.bytecode().some()
     }
 
     fn get_reg_value(&self, s: &str) -> Option<usize> {
@@ -297,6 +318,18 @@ impl<const N: usize> Machine<N> {
             Reg::Rip => &mut self.rip,
         }) = val;
         Ok(())
+    }
+
+    fn get_reg_value_idx(&mut self, reg: usize) -> MachineResult<Unit> {
+        use Register as Reg;
+        Ok(match reg.try_into()? {
+            Reg::Rzero => self.r0,
+            Reg::Rone => self.r1,
+            Reg::Rtwo => self.r2,
+            Reg::Rin => self.rin,
+            Reg::Rout => self.rout,
+            Reg::Rip => self.rip,
+        })
     }
 
     fn assert_is_reg(&self, token: &Token) -> Result<(), MachineError> {
@@ -406,16 +439,20 @@ impl<const N: usize> Machine<N> {
     fn run_bytecode(&mut self, bytecode: &[Unit]) -> MachineResult<()> {
         let mut i = 0;
         while let Some(instruction) = bytecode.get(i) {
+            let mut n = 1; // number of instructions consumed
             match instruction {
                 0..ADD_REG_USIZE => todo!("Instructions 0-ADD"),
 
-                ADD_REG_USIZE..ADD_REG_USIZE_END => {
+                ADD_REG_USIZE..=ADD_REG_USIZE_END => {
                     let reg = instruction - ADD_REG_USIZE;
-                    self.set_reg_idx(reg as usize, *bytecode.get(i + 1).ok_or(MachineError::MachineCodeError)?)?;
+                    let prev = self.get_reg_value_idx(reg as usize)?;
+                    self.set_reg_idx(reg as usize, prev + *bytecode.get(i + 1).ok_or(MachineError::MachineCodeError)?)?;
+                    n += 1;
                 }
 
                 val => todo!("Range {val} onwards..."),
             }
+            i += n;
         }
         Ok(())
     }
@@ -707,6 +744,12 @@ fn main() {
 // entry:
 "
     add rout 12
+    add r0 3
+    add r0 3
+    add r1 23424324
+    add r2 444
+    add rin 2
+    add rip 2
 "
     // add [rout] 3
     // add rin [rout]
@@ -725,6 +768,7 @@ fn main() {
         
         let read_loc = 12;
         println!("Byte at {read_loc:#x}: {byte}", byte=machine.read_byte(read_loc).expect("Out of bounds memory access."));
-        println!("Register at {reg}: {byte}", byte=machine.get_reg_value(reg).expect("Tried to read unknown register"));
+        machine.print_registers();
+        // println!("Register at {reg}: {byte}", byte=machine.get_reg_value(reg).expect("Tried to read unknown register"));
     // }
 }
