@@ -1,6 +1,12 @@
 use std::fmt::{Display, self};
 
-const PUNCTS: &[char] = &['(', ')', ';', ':'];
+const PUNCTS: &[char] = &['(', ')', '{', '}', ';', ':'];
+
+trait Optionalise where Self: Sized {
+    fn some(self) -> Option<Self> {
+        Some(self)
+    }
+}
 
 struct Ast {
     puncts:         &'static [char],
@@ -131,6 +137,12 @@ impl Display for Location {
     }
 }
 
+impl Default for Location {
+    fn default() -> Self {
+        Self { line: 0, column_start: 0, column_end: 0 }
+    }
+}
+
 impl Location {
     fn new(line: usize, column_start: usize, column_end: usize) -> Self {
         Self { line, column_start, column_end }
@@ -169,24 +181,103 @@ impl TokenType {
             return None;
         })
     }
+
+    fn is_punct(&self, punct: char) -> bool {
+        match self {
+            Self::Punct(p) => *p == punct,
+            _ => false
+        }
+    }
+
+    fn is_int(&self) -> Option<i32> {
+        match self {
+            Self::IntLiteral(i) => Some(*i),
+            _ => None
+        }
+    }
+
+    fn is_ident(&self) -> Option<&str> {
+        match self {
+            Self::Ident(ident) => Some(ident.as_str()),
+            _ => None
+        }
+    }
 }
 
 struct Ident {
     name: String,
 }
 
+impl Ident {
+    fn new(s: impl ToString) -> Self {
+        Self {
+            name: s.to_string(),
+        }
+    }
+}
+
+enum ValueType {
+    Block {
+        exprs: Vec<Expr>,
+        returns: Box<Type>,   
+    },
+}
+
+struct Value {
+    ty: Type,
+    value: ValueType,
+}
+
+impl Value {
+    fn from(ty: Type, tokens: &[Token]) -> Option<(usize, Self)> {
+        if matches!(ty, Type::Inferred) {
+            todo!("infer types");
+        }
+        else {
+            
+        }
+    }
+}
+
 enum Type {
     Function {
         args: Vec<Type>,
-        return: Box<Type>,
+        returns: Box<Type>,
     },
     Unit,
+    Inferred,
+}
+
+impl Type {
+    fn from(tokens: &[Token]) -> Option<(usize, Self)> {
+        Some(if tokens[0].ty.is_punct(':') {
+            (0, Self::Inferred)
+        }
+        else if tokens.len() == 1 {
+            (1, Self::parse_simple(&tokens[0])?)
+        }
+        else {
+            todo!("Implement complex types.")
+        })
+    }
+
+    fn parse_simple(token: &Token) -> Option<Self> {
+        match &token.ty {
+            TokenType::Ident(i) => {
+                todo!("Parse simple type")
+            }
+            // ERROR: a type can't be a number or string
+            _ => return None,
+        }
+    }
 }
 
 enum ExprTy {
-    Def {
-        id: Ident,
-        ty: Type,
+    /// A declaration is anything like:
+    /// ident : <type>? : value
+    Declaration {
+        ident: Ident,
+        value: Value,
     }
 }
 
@@ -196,8 +287,46 @@ struct Expr {
 }
 
 impl Expr {
-    fn def(id: impl ToString, ty: Type, loc: Location) -> Self {
+    fn parse<'a>(tokens: &'a [Token]) -> Option<(Self, &'a [Token])> {
+        let n; // just so i don't forget
+        let expr;
+        let mut loc = Location::default();
+        if tokens.is_empty() {
+            return None;
+        }
+        if tokens.len() < 4 {
+            todo!("Implement other types of expressions.");
+        }
 
+        loc.line = tokens[0].loc.line;
+        loc.column_start = tokens[0].loc.column_start;
+
+        if let Some(ident) = tokens[0].ty.is_ident() {
+            let mut index = 1;
+            let ident = Ident::new(ident);
+
+            if tokens[index].ty.is_punct(':') {
+                let (taken_ty, ty) = Type::from(&tokens[index + 1..])?;
+                index += taken_ty;
+
+                if tokens[index + 1].ty.is_punct(':') {
+                    let (taken_val, value) = Value::from(ty, &tokens[index + 1..])?;
+                    index += taken_val;
+
+                    n = index;
+                    expr = Expr {
+                        ty: ExprTy::Declaration {
+                            ident,
+                            value
+                        },
+                        loc,
+                    };
+                    return Some((expr, &tokens[n..]));
+                }
+            }
+        }
+
+        return None;
     }
 }
 
@@ -214,26 +343,20 @@ impl Parser {
             string_enter: '\'',
             string_exit: '\'',
         };
-        let Some(tokens) = ast.parse(&input) else {
+        let Some(tokens_vec) = ast.parse(&input) else {
             println!("Parsing error, presumably unknown token.");
             return None;
         };
         println!("Input: {input}");
-        println!("Tokens: {tokens:#?}");
+        println!("Tokens: {tokens_vec:#?}");
 
-        let mut exprs = vec![];
+        let mut exprs: Vec<Expr> = vec![];
 
-        let mut i = 0;
-        while let Some(tok) = tokens.get(i) {
-            let mut n = 1;
-            let loc = tok.loc.clone();
-            match &tok.ty {
-                TokenType::Ident(kword) => {
-                    
-                }
-                any => todo!("TokenType: {any:?}"),
-            }
-            i += n;
+        let mut tokens = tokens_vec.as_slice();
+
+        while let Some((expr, toks)) = Expr::parse(tokens) {
+            exprs.push(expr);
+            tokens = toks;
         }
 
         Some(())

@@ -5,9 +5,13 @@
 mod language;
 fn main() {
     language::Parser::parse(
-"main :: fn() {
-    print 'hi';
-}"
+"
+val :: 5;
+print 'hi';
+"
+// "main :: fn() {
+//     print 'hi';
+// }"
 );
 }
 
