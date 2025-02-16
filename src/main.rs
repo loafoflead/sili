@@ -5,14 +5,32 @@
 mod language;
 fn main() {
     language::Parser::parse(
+// main : fn() : {
+//     print 'hi';
+// }
 "
-val :: 5;
-print 'hi';
+main :: fn() {
+    :: 12303;
+    CONST :: 12303;
+}
+VAL :int: 122;
 "
+// Expr::Declaration {
+//   ident: "main",
+//   ty: Type::Function { args: [], returns: Unit },
+//   value: Value::Expr {
+//       expr: Expr::Block {..},
+//   } 
+// }
+// Expr::Declaration {
+//   ident: "val",
+//   ty: Type::IntLiteral,
+//   value: Value::Int(1),
+// }
 // "main :: fn() {
 //     print 'hi';
 // }"
-);
+).unwrap();
 }
 
 // const PUNCTS: &[char] = &[':', ';', '.', '[', ']'];
