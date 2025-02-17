@@ -21,58 +21,94 @@ trait Wrap where Self: Sized {
 
 impl<T> Wrap for T {}
 
+macro_rules! t {
+    (str $l: literal) => {{
+        let _: &str = $l;
+        TokenType::StringLiteral($l)
+    }};
+    (num $l: literal) => {
+        TokenType::from_str(stringify!($l))
+    };
+    ($l: literal) => {
+        TokenType::Punct($l)
+    };
+    ($ts: tt) => {{
+        let ast = Ast {
+            puncts: PUNCTS,
+            keywords: &["fn"],
+            string_enter: '\'',
+            string_exit: '\'',
+            keep_newlines: false,
+        };
+        let Some(tokens_vec) = ast.parse(stringify!($ts)) else {
+            panic!("Parsing error in token macro");
+        };
+
+        tokens_vec
+    }}
+}
+
 #[derive(Debug)]
-pub struct ParseError {
-    err: ParseErrorTy,
+pub struct ParseErrorLoc {
+    err: ParseError,
     loc: Location,
 }
 
-impl Display for ParseError {
+impl Display for ParseErrorLoc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "{} - ERROR : {}", self.loc, self.err)
-    }
-}
-
-impl ParseError {
-    fn from(token: &Token, ty: ParseErrorTy) -> Self {
-        Self {
-            loc: token.loc.clone(),
-            err: ty,
+        if self.loc == Location::default() {
+            write!(f, "? : ERROR: {}", self.err)
         }
-    }
-
-    fn ty(ty: ParseErrorTy) -> Self {
-        Self {
-            loc: Location::default(),
-            err: ty,
+        else {
+            write!(f, "{} : ERROR : {}", self.loc, self.err)
         }
     }
 }
 
 #[derive(Debug)]
-pub enum ParseErrorTy {
-    ExpectedTokenType(TokenType),
+pub enum ParseError {
+    ExpectedTokenType(Vec<Token>, TokenType),
     ExpectedPunct(char),
     EmptyTokens,
     CannotParse(Vec<Token>),
     CannotParseTypeFrom(TokenType),
+    CouldNotFindSequence(Vec<Token>),
     ExpectedLiteralOfType(Type, TokenType),
+    UnwantedToken(TokenType),
 }
 
-impl Display for ParseErrorTy {
+impl ParseError {
+    fn at(self, loc: Location) -> ParseErrorLoc {
+        ParseErrorLoc {
+            err: self,
+            loc,
+        }
+    }
+
+    fn loc_unknown(self) -> ParseErrorLoc {
+        ParseErrorLoc {
+            err: self,
+            loc: Location::default(),
+        }
+    }
+}
+
+impl Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            Self::ExpectedTokenType(tok) => write!(f, "Expected token of type: `{tok:?}`"),
+            Self::ExpectedTokenType(toks, tok) => write!(f, "Expected token of type: `{tok:?}` in {toks:?}"),
             Self::ExpectedLiteralOfType(ty, tok) => write!(f, "Expected literal of type: `{ty:?}`, got `{tok:?}`"),
             Self::CannotParseTypeFrom(tokty) => write!(f, "Cannot parse type from token: `{tokty:?}`, expected identifier"),
+            Self::CouldNotFindSequence(toks) => write!(f, "Expected sequence of tokens but could not find them: `{toks:?}`"),
             Self::ExpectedPunct(c) => write!(f, "Expected punctuation: `{c}`"),
+            Self::UnwantedToken(tok) => write!(f, "Found token of type: `{tok:?}`, though was hoping not to."),
             Self::EmptyTokens => write!(f, "Reached end of tokens or was passed an empty list"),
             Self::CannotParse(tokens) => write!(f, "Could not parse tokens: `{tokens:?}`"),
         }
     }
 }
 
-type ParseResult<T> = Result<T, ParseError>;
+type ParseResult<T> = Result<T, ParseErrorLoc>;
 
 struct Ast {
     puncts:         &'static [char],
@@ -169,7 +205,7 @@ impl Ast {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 struct Token {
     ty: TokenType,
     loc: Location,
@@ -191,7 +227,7 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Location {
     line: usize,
     column_start: usize,
@@ -278,21 +314,75 @@ impl TokenType {
     }
 }
 
-fn pos_of(tokens: &[Token], token: TokenType) -> ParseResult<usize> {
-    tokens
-        .iter()
-        .position(|t| t.ty == token)
-        .ok_or(ParseError::from( &tokens[0], ParseErrorTy::ExpectedTokenType(token.clone()) ))
+trait TokenOps<'a> {
+    fn pos_of(&'a self, token: TokenType) -> ParseResult<usize>;
+    fn get_before(&'a self, tok: TokenType) -> ParseResult<&'a [Token]>;
+    fn get_after(&'a self, tok: TokenType) -> ParseResult<&'a [Token]>;
+    fn get_between(&'a self, tok1: TokenType, tok2: TokenType) -> ParseResult<&'a [Token]>;
+    fn get_between_without(&'a self, tok1: TokenType, tok2: TokenType, exclude: &[TokenType]) -> ParseResult<&'a [Token]>;
+    fn find_seq(&'a self, pattern: Vec<Token>) -> ParseResult<(usize, usize)>;
 }
 
-fn get_inside_block(tokens: &[Token]) -> ParseResult<&[Token]> {
-    assert!(tokens.len() != 0, "tried to parse block from nothing");
-    if !tokens[0].ty.is_punct('{') { 
-        return Err(ParseError::from(&tokens[0], ParseErrorTy::ExpectedPunct('{')));
-    };
-    let end = pos_of(tokens, TokenType::Punct('}'))?;
-    return Ok(&tokens[1..end]);
+impl<'a> TokenOps<'a> for &'a [Token] {
+    /// Note: includes the found token
+    fn pos_of(&'a self, token: TokenType) -> ParseResult<usize> {
+        if self.is_empty() { return Err(ParseError::EmptyTokens.loc_unknown()); }
+        self
+            .iter()
+            .position(|t| t.ty == token)
+            .ok_or(ParseError::ExpectedTokenType(self.to_vec(), token.clone()).at(self[0].loc))
+    }
+
+    fn get_before(&'a self, tok: TokenType) -> ParseResult<&'a [Token]> {
+        let tok_loc = self.pos_of(tok)?;
+        Ok(&self[..tok_loc])
+    }
+
+    fn get_after(&'a self, tok: TokenType) -> ParseResult<&'a [Token]> {
+        let tok_loc = self.pos_of(tok)?;
+        Ok(&self[tok_loc+1..]) // don't wan'nit
+    }
+
+    fn get_between(&'a self, tok1: TokenType, tok2: TokenType) -> ParseResult<&'a [Token]> {
+        let strt = self.pos_of(tok1.clone())?;
+        let new = &self[strt+1..];
+        let end = new.pos_of(tok2.clone())? + strt + 1;
+        Ok(&self[strt+1..end])
+    }
+
+    fn get_between_without(&'a self, tok1: TokenType, tok2: TokenType, exclude: &[TokenType]) -> ParseResult<&'a [Token]> {
+        let strt = self.pos_of(tok1.clone())?;
+        let new = &self[strt+1..];
+        let end = new.pos_of(tok2.clone())? + strt + 1;
+        for i in strt..end {
+            let tok = &self[i];
+            if exclude.contains(&tok.ty) {
+                return Err(ParseError::UnwantedToken(tok.ty.clone()).at(tok.loc));
+            }
+        }
+        Ok(&self[strt+1..end])
+    }
+
+    fn find_seq(&'a self, toks: Vec<Token>) -> ParseResult<(usize, usize)> {
+        let mut p = 0;
+        let mut s = 0;
+        for (i, t) in self.iter().enumerate() {
+            if *t == toks[p] {
+                if p == 0 { s = i }
+                p += 1;
+            }
+            else {
+                s = 0;
+                p = 0;
+            }
+            if p == toks.len() {
+                return Ok((s, i));
+            }
+        }
+        Err(ParseError::CouldNotFindSequence(toks).at(self[0].loc))
+    }
 }
+
 
 struct Literal;
 
@@ -343,8 +433,8 @@ impl Value {
                 n = taken;
             }
             Type::IntLiteral => {
-                let int = tokens[0].ty.is_int().ok_or(ParseError::from(&tokens[0], ParseErrorTy::ExpectedLiteralOfType(ty.clone(), tokens[0].ty.clone())));
-                let end = pos_of(tokens, TokenType::Punct(';'))?;
+                let int = tokens[0].ty.is_int().ok_or(ParseError::ExpectedLiteralOfType(ty.clone(), tokens[0].ty.clone()).at(tokens[0].loc));
+                let end = tokens.pos_of(TokenType::Punct(';'))?;
                 if end != 1 {
                     todo!("Parse maths to get value of int literal (in fact, maybe centralise the whole number parsing system to not rely on a specific type)");
                 }
@@ -367,15 +457,16 @@ impl Value {
         if let Some(kword) = tokens[0].ty.is_keyword() {
             match kword {
                 "fn" => {
-                    let _start = pos_of(tokens, TokenType::Punct('('))?;
-                    let end = pos_of(tokens, TokenType::Punct(')'))?;
-                    let block_start = pos_of(tokens, TokenType::Punct('{'))?;
+                    let arg_tokens = tokens.get_between(t!('('), t!(')'))?;
+                    let block = tokens.get_between(t!('{'), t!('}'))?;
+                    let block_start = tokens.pos_of(t!('{'))?;
+                    let args_end = tokens.pos_of(t!(')'))?; // parens + fn keyword
 
                     // FIXME: bounds checking
-                    let args_types = if end == 2 { vec![] } else { Type::parse_args(&tokens[2..end])? };
+                    let args_types = Type::parse_args(arg_tokens)?;
                     let returns = 
-                        if tokens.len() > end + 2 && tokens[end+1].ty.is_punct('-') && tokens[end+2].ty.is_punct('>') {
-                            Type::from(&tokens[end+3..block_start])?.1
+                        if block_start - args_end > 2 && tokens[args_end+1].ty.is_punct('-') && tokens[args_end+2].ty.is_punct('>') {
+                            Type::from(tokens.get_between(t!('>'), t!('{'))?)?.1
                         } else {
                             Type::Unit
                         };
@@ -394,7 +485,7 @@ impl Value {
             // TODO: InferDefer type for inferring later
         }
         else if let Some(_) = tokens[0].ty.is_int() {
-            let end = pos_of(tokens, TokenType::Punct(';'))?;
+            let end = tokens.pos_of(TokenType::Punct(';'))?;
 
             if end == 1 {
                 n = 0;
@@ -430,12 +521,11 @@ impl Type {
         let n;
         let ret;
         // dbg!(&tokens);
-        let next_colon = pos_of(tokens, TokenType::Punct(':'))?;
-        if next_colon == 0 {
+        if tokens.is_empty() {
             n = 0;
             ret = Self::Inferred;
         }
-        else if next_colon == 1 {
+        else if tokens.len() == 1 {
             n = 1;
             ret = Self::parse_simple(&tokens[0])?;
         }
@@ -446,6 +536,8 @@ impl Type {
     }
 
     fn parse_args(tokens: &[Token]) -> ParseResult<Vec<Self>> {
+        if tokens.is_empty() { return Ok(vec!()); }
+
         let mut tys = vec![];
         let mut i = 0;
         let mut s = 0; // TODO: rename this shitass name, already forgot what it means
@@ -475,7 +567,7 @@ impl Type {
                 })
             }
             // ERROR: a type can't be a number or string
-            _ => return Err(ParseError::from( token, ParseErrorTy::CannotParseTypeFrom(token.ty.clone()) )),
+            _ => return Err(ParseError::CannotParseTypeFrom(token.ty.clone()).at(token.loc)),
         }
     }
 
@@ -515,45 +607,14 @@ impl Expr {
         let expr;
         let mut loc = Location::default();
         if tokens.is_empty() {
-            return Err(ParseError { loc: Location::default(), err: ParseErrorTy::EmptyTokens });
+            return Err(ParseError::EmptyTokens.loc_unknown());
         }
 
         loc.line = tokens[0].loc.line;
         loc.column_start = tokens[0].loc.column_start;
 
-        if let Some(ident) = tokens[0].ty.is_ident() {
-            // looking for syntax like:
-            // ident : type? : value ;?
-            let mut index = 1;
-            let ident = Ident::new(ident);
-
-            // dbg!(&tokens[0..5]);
-            if tokens[index].ty.is_punct(':') {
-                index += 1; // take first colon
-                // dbg!(&tokens[index..index+3]);
-                let (taken_ty, ty) = Type::from(&tokens[index..])?;
-                index += taken_ty;
-
-                if tokens[index].ty.is_punct(':') {
-                    index += 1; // take second colon
-                    let (taken_val, value) = Value::from(ty, &tokens[index..])?;
-                    index += taken_val;
-
-                    n = index;
-                    expr = Expr {
-                        ty: ExprTy::Declaration {
-                            ident,
-                            value: value.wrap(),
-                        },
-                        loc,
-                    };
-                    println!("Parsing declaration, length: {n} (type: {taken_ty}, value: {taken_val})\nExpr: {expr:#?}");
-                    return Ok((n, expr));
-                }
-            }
-        }
-        else if let TokenType::Punct('{') = tokens[0].ty {
-            let mut inner_tokens = get_inside_block(tokens)?;
+        if let TokenType::Punct('{') = tokens[0].ty {
+            let mut inner_tokens = tokens.get_between(t!('{'), t!('}'))?;
             if inner_tokens.is_empty() {
                 n = 2;
                 expr = Expr {
@@ -568,10 +629,15 @@ impl Expr {
                 let mut exprs = vec![];
                 let mut taken = 0;
 
-                while let Ok((n, expr)) = Expr::parse(inner_tokens) {
+                loop {
+                    let ret = Expr::parse(inner_tokens);
+                    if let Err(ParseErrorLoc { err: ParseError::EmptyTokens, .. }) = ret {
+                        break;
+                    }
+                    let (n, expr) = ret?;
                     exprs.push(expr);
-                    inner_tokens = &inner_tokens[n..];
                     taken += n;
+                    inner_tokens = &inner_tokens[n..];
                 }
 
                 n = 2 + taken;
@@ -581,12 +647,37 @@ impl Expr {
                     },
                     loc,
                 };
-                println!("GOOP!");
                 return Ok((n, expr));
             }
         }
-        else if matches!(tokens[0].ty, TokenType::Eof) {
-            println!("Reached end of parsing expressions.");
+        // so we don't hit across lines or blocks
+        if let Ok(ty) = tokens.get_between_without(t!(':'), t!(':'), &[t!(';'), t!('{'), t!('}')]) {
+            let lhs = tokens.get_before(t!(':'))?;
+            let after_second_colon = ty.len()+lhs.len()+2;
+            let rhs = &tokens[after_second_colon..];
+
+            if let Some(ident) = tokens[0].ty.is_ident() {
+                let ident = Ident::new(ident);
+                let (_, ty) = Type::from(ty)?;
+                let (value_size, value) = Value::from(ty, rhs)?;
+
+                n = after_second_colon + value_size;
+                expr = Expr {
+                    ty: ExprTy::Declaration {
+                        ident,
+                        value: value.wrap(),
+                    },
+                    loc,
+                };
+                // println!("Parsing declaration, length: {n} (size of value: {value_size}, size of type+ident: {after_second_colon})\nExpr: {expr:#?}");
+                return Ok((n, expr));
+            }
+            else {
+                todo!("implement multiple assignment, possibly abstract 'Assignee' to a struct like value/type");
+            }
+        }
+        
+        if matches!(tokens[0].ty, TokenType::Eof) {
             return Ok((1, Expr { ty: ExprTy::Eof, loc: loc }));
         }
 
@@ -594,7 +685,7 @@ impl Expr {
             todo!("Implement other types of expressions: {tokens:?}");
         }
 
-        return Err(ParseError::from(&tokens[0], ParseErrorTy::CannotParse(tokens.to_vec())));
+        return Err(ParseError::CannotParse(tokens.to_vec()).at(tokens[0].loc));
     }
 }
 
@@ -617,23 +708,29 @@ impl Parser {
             return Ok(());
         };
         println!("Input: {input}");
-        println!("Tokens: {tokens_vec:#?}");
+        // println!("Tokens: {tokens_vec:#?}");
 
         let mut exprs: Vec<Expr> = vec![];
 
         let mut tokens = tokens_vec.as_slice();
 
-        while let Ok((n, expr)) = Expr::parse(tokens) {
+        // TODO: iterator mf
+        loop {
+            let ret = Expr::parse(tokens);
+            if let Err(ParseErrorLoc { err: ParseError::EmptyTokens, .. }) = ret {
+                break;
+            }
+            if let Err(e) = ret {
+                println!("{}", e);
+                break;
+            }
+            let (n, expr) = ret?;
             exprs.push(expr);
             tokens = &tokens[n..];
         }
-        if let Err(ParseError { err: ParseErrorTy::EmptyTokens, .. }) = Expr::parse(tokens) {
-            dbg!(exprs);
-            return Ok(());
-        }
-        else {
-            let e = Expr::parse(tokens).err().unwrap();
-            return Err(e);
-        }
+
+        dbg!(exprs);
+
+        Ok(())
     }
 }

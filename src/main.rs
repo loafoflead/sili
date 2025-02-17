@@ -10,7 +10,7 @@ fn main() {
 // }
 "
 main :: fn() {
-    :: 12303;
+    CONST :: 12303;
     CONST :: 12303;
 }
 VAL :int: 122;
