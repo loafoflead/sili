@@ -1,6 +1,12 @@
 use std::fmt::{Display, self};
 
-const PUNCTS: &[char] = &['(', ')', '{', '}', ';', ':', ',', '-', '>'];
+// mod const_value;
+// use const_value::ConstantValue;
+
+// mod value;
+// use value::Value;
+
+const PUNCTS: &[char] = &['(', ')', '{', '}', ';', ':', ',', '-', '>', '='];
 
 type Int = i32;
 type Float = f32;
@@ -75,6 +81,7 @@ pub enum ParseError {
     CouldNotFindSequence(Vec<Token>),
     ExpectedLiteralOfType(Type, TokenType),
     UnwantedToken(TokenType),
+    UnexpectedKeyword(String, &'static [&'static str]),
 }
 
 impl ParseError {
@@ -102,6 +109,7 @@ impl Display for ParseError {
             Self::CouldNotFindSequence(toks) => write!(f, "Expected sequence of tokens but could not find them: `{toks:?}`"),
             Self::ExpectedPunct(c) => write!(f, "Expected punctuation: `{c}`"),
             Self::UnwantedToken(tok) => write!(f, "Found token of type: `{tok:?}`, though was hoping not to."),
+            Self::UnexpectedKeyword(kw, wanted) => write!(f, "Found keyword: `{kw}` when only {wanted:?} was expected."),
             Self::EmptyTokens => write!(f, "Reached end of tokens or was passed an empty list"),
             Self::CannotParse(tokens) => write!(f, "Could not parse tokens: `{tokens:?}`"),
         }
@@ -384,7 +392,23 @@ impl<'a> TokenOps<'a> for &'a [Token] {
 }
 
 
-struct Literal;
+#[derive(Debug)]
+enum Literal {
+    Int(i32),
+    Float(f32),
+}
+
+impl From<i32> for Literal {
+    fn from(rhs: i32) -> Self {
+        Self::Int(rhs)
+    }
+}
+
+impl From<f32> for Literal {
+    fn from(rhs: f32) -> Self {
+        Self::Float(rhs)
+    }
+}
 
 #[derive(Debug)]
 struct Ident {
@@ -396,109 +420,6 @@ impl Ident {
         Self {
             name: s.to_string(),
         }
-    }
-}
-
-#[derive(Debug)]
-enum ValueType {
-    Expr(Expr),
-    IntLiteral(Int),
-}
-
-/// 'Value' is like 'assignee', what's on the right
-/// hand side of an assignment
-#[derive(Debug)]
-struct Value {
-    ty: Type,
-    value: ValueType,
-}
-
-impl Value {
-    fn from(ty: Type, tokens: &[Token]) -> ParseResult<(usize, Self)> {
-        let n;
-        let ret;
-        assert!(tokens.len() != 0, "Cannot parse value with no tokens");
-
-        if matches!(ty, Type::Inferred) {
-            let (taken, ty) = Self::infer_type(tokens)?;
-            let (val_took, val) = Value::from(ty, &tokens[taken..])?;
-            n = val_took + taken;
-            return Ok((n, val));
-        }
-
-        match ty {
-            Type::Function {..} => {
-                let (taken, expr) = Expr::parse(tokens)?;
-                ret = ValueType::Expr(expr);
-                n = taken;
-            }
-            Type::IntLiteral => {
-                let int = tokens[0].ty.is_int().ok_or(ParseError::ExpectedLiteralOfType(ty.clone(), tokens[0].ty.clone()).at(tokens[0].loc));
-                let end = tokens.pos_of(TokenType::Punct(';'))?;
-                if end != 1 {
-                    todo!("Parse maths to get value of int literal (in fact, maybe centralise the whole number parsing system to not rely on a specific type)");
-                }
-                ret = ValueType::IntLiteral(int?);
-                n = end+1;
-            }
-            other => todo!("Parse value for type {other:?}"),
-        }
-
-        Ok((n, Value { ty, value: ret }))
-    }
-
-    /// This function will consume tokens if the value is like:
-    /// Type { body } or fn() -> ty { body }
-    /// Otherwise, it will simply infer and consume nothing
-    fn infer_type(tokens: &[Token]) -> ParseResult<(usize, Type)> {
-        let n;
-        let ret;
-        assert!(tokens.len() != 0, "Cannot infer type from no tokens");
-        if let Some(kword) = tokens[0].ty.is_keyword() {
-            match kword {
-                "fn" => {
-                    let arg_tokens = tokens.get_between(t!('('), t!(')'))?;
-                    let block = tokens.get_between(t!('{'), t!('}'))?;
-                    let block_start = tokens.pos_of(t!('{'))?;
-                    let args_end = tokens.pos_of(t!(')'))?; // parens + fn keyword
-
-                    // FIXME: bounds checking
-                    let args_types = Type::parse_args(arg_tokens)?;
-                    let returns = 
-                        if block_start - args_end > 2 && tokens[args_end+1].ty.is_punct('-') && tokens[args_end+2].ty.is_punct('>') {
-                            Type::from(tokens.get_between(t!('>'), t!('{'))?)?.1
-                        } else {
-                            Type::Unit
-                        };
-
-                    n = block_start;
-                    ret = Type::Function {
-                        args: args_types,
-                        returns: returns.wrap(),
-                    };
-                },
-                kw => todo!("Implement keyword {kw}"),
-            }
-        }
-        else if let Some(ident) = tokens[0].ty.is_ident() {
-            todo!("Infer type from an ident (presumably cannot be done at this stage of parsing)");
-            // TODO: InferDefer type for inferring later
-        }
-        else if let Some(_) = tokens[0].ty.is_int() {
-            let end = tokens.pos_of(TokenType::Punct(';'))?;
-
-            if end == 1 {
-                n = 0;
-                ret = Type::IntLiteral;
-            }
-            else {
-                todo!("Parse maths to infer type of mathematical operation: {tokens:?}");
-            }
-        }
-        else {
-            todo!("Infer type from {tokens:?}");
-        }
-        Ok((n, ret))
     }
 }
 
@@ -530,8 +451,61 @@ impl Type {
             ret = Self::parse_simple(&tokens[0])?;
         }
         else {
-            todo!("Implement complex types: {tokens:?}")
+            (n, ret) = Self::parse_complex(tokens)?;
         };
+        Ok((n, ret))
+    }
+
+    fn parse_complex(tokens: &[Token]) -> ParseResult<(usize, Self)> {
+        let n;
+        let ret;
+        assert!(tokens.len() != 0, "Cannot parse complex type from no tokens");
+
+        if let Some(kword) = tokens[0].ty.is_keyword() {
+            match kword {
+                "fn" => {
+                    let arg_tokens = tokens.get_between(t!('('), t!(')'))?;
+                    let block = tokens.get_between(t!('{'), t!('}'))?;
+                    let block_start = tokens.pos_of(t!('{'))?;
+                    let args_end = tokens.pos_of(t!(')'))?; // parens + fn keyword
+
+                    // FIXME: bounds checking
+                    let args_types = Type::parse_args(arg_tokens)?;
+                    let returns = 
+                        if block_start - args_end > 2 && tokens[args_end+1].ty.is_punct('-') && tokens[args_end+2].ty.is_punct('>') {
+                            Type::from(tokens.get_between(t!('>'), t!('{'))?)?.1
+                        } else {
+                            Type::Unit
+                        };
+
+                    n = block_start;
+                    ret = Type::Function {
+                        args: args_types,
+                        returns: returns.wrap(),
+                    };
+                },
+                "struct" | "enum" | "macro" => todo!("Implement keyword {kword}"),
+                kw => return Err(ParseError::UnexpectedKeyword(kw.to_string(), &["TODO"]).at(tokens[0].loc))
+            }
+        }
+        else if let Some(ident) = tokens[0].ty.is_ident() {
+            todo!("Infer type from an ident (presumably cannot be done at this stage of parsing)");
+            // TODO: InferDefer type for inferring later
+        }
+        else if let Some(_) = tokens[0].ty.is_int() {
+            let end = tokens.pos_of(TokenType::Punct(';'))?;
+
+            if end == 1 {
+                n = 0;
+                ret = Type::IntLiteral;
+            }
+            else {
+                todo!("Parse maths to infer type of mathematical operation: {tokens:?}");
+            }
+        }
+        else {
+            todo!("Infer type from {tokens:?}");
+        }
         Ok((n, ret))
     }
 
@@ -583,15 +557,22 @@ impl Type {
 
 #[derive(Debug)]
 enum ExprTy {
-    /// A declaration is anything like:
-    /// ident : <type>? : expr
-    Declaration {
+    /// A const assignment is anything like:
+    /// ident : <type>? : const_val
+    ConstantAssignment {
         ident: Ident,
-        value: Box<Value>,
+        ty: Type,
+        value: Box<Expr>,
+    },
+    Assignment {
+        ident: Ident, 
+        ty: Type,
+        value: Box<Expr>,
     },
     Block {
         exprs: Vec<Expr>,
     },
+    Literal(Literal),
     Eof,
 }
 
@@ -600,6 +581,9 @@ struct Expr {
     ty: ExprTy,
     loc: Location,
 }
+
+// @what: i think the best idea is to go back to values,
+// and make expressions able to evaluate to values
 
 impl Expr {
     fn parse<'a>(tokens: &'a [Token]) -> ParseResult<(usize, Self)> {
@@ -613,19 +597,20 @@ impl Expr {
         loc.line = tokens[0].loc.line;
         loc.column_start = tokens[0].loc.column_start;
 
-        if let TokenType::Punct('{') = tokens[0].ty {
-            let mut inner_tokens = tokens.get_between(t!('{'), t!('}'))?;
-            if inner_tokens.is_empty() {
-                n = 2;
-                expr = Expr {
-                    ty: ExprTy::Block {
-                        exprs: vec![],
-                    },
-                    loc,
-                };
-                return Ok((n, expr));
-            }
-            else {
+        match tokens[0].ty {
+            // parse a block
+            TokenType::Punct('{') => {
+                let mut inner_tokens = tokens.get_between(t!('{'), t!('}'))?;
+                if inner_tokens.is_empty() {
+                    n = 2;
+                    expr = Expr {
+                        ty: ExprTy::Block {
+                            exprs: vec![],
+                        },
+                        loc,
+                    };
+                    return Ok((n, expr));
+                }
                 let mut exprs = vec![];
                 let mut taken = 0;
 
@@ -649,7 +634,23 @@ impl Expr {
                 };
                 return Ok((n, expr));
             }
+            TokenType::IntLiteral(int) => {
+                return Ok((1, Expr::new(ExprTy::Literal(int.into()), tokens[0].loc)));
+            }
+            TokenType::Keyword(kw) => {
+                if let Ok((_, ty)) = Type::from(tokens) {
+                    if matches!(ty, Type::Inferred) {
+                        return Err(ParseError::EmptyTokens.at(tokens[0].loc));
+                    }
+
+                    todo!("parse function declaration");
+                }
+                else {
+                    todo!("Parse keyword expressions, if, while, for, etc...");
+                }
+            }
         }
+        
         // so we don't hit across lines or blocks
         if let Ok(ty) = tokens.get_between_without(t!(':'), t!(':'), &[t!(';'), t!('{'), t!('}')]) {
             let lhs = tokens.get_before(t!(':'))?;
@@ -659,11 +660,37 @@ impl Expr {
             if let Some(ident) = tokens[0].ty.is_ident() {
                 let ident = Ident::new(ident);
                 let (_, ty) = Type::from(ty)?;
-                let (value_size, value) = Value::from(ty, rhs)?;
+                let (value_size, value) = Expr::parse(rhs)?;
 
                 n = after_second_colon + value_size;
                 expr = Expr {
-                    ty: ExprTy::Declaration {
+                    ty: ExprTy::ConstantAssignment {
+                        ident,
+                        ty,
+                        value: value.wrap(),
+                    },
+                    loc,
+                };
+                // println!("Parsing declaration, length: {n} (size of value: {value_size}, size of type+ident: {after_second_colon})\nExpr: {expr:#?}");
+                return Ok((n, expr));
+            }
+            else {
+                todo!("{tokens:?}: implement multiple assignment, possibly abstract 'Assignee' to a struct like value/type");
+            }
+        }
+        /*if let Ok(ty) = tokens.get_between_without(t!(':'), t!('='), &[t!(';'), t!('{'), t!('}')]) {
+            let lhs = tokens.get_before(t!(':'))?;
+            let after_equals = ty.len()+lhs.len()+2;
+            let rhs = &tokens[after_equals..];
+
+            if let Some(ident) = tokens[0].ty.is_ident() {
+                let ident = Ident::new(ident);
+                let (_, ty) = Type::from(ty)?;
+                let (value_size, value) = Value::from(ty, rhs)?;
+
+                n = after_equals + value_size;
+                expr = Expr {
+                    ty: ExprTy::Assignment {
                         ident,
                         value: value.wrap(),
                     },
@@ -675,8 +702,8 @@ impl Expr {
             else {
                 todo!("implement multiple assignment, possibly abstract 'Assignee' to a struct like value/type");
             }
-        }
-        
+        }*/
+
         if matches!(tokens[0].ty, TokenType::Eof) {
             return Ok((1, Expr { ty: ExprTy::Eof, loc: loc }));
         }
@@ -686,6 +713,13 @@ impl Expr {
         }
 
         return Err(ParseError::CannotParse(tokens.to_vec()).at(tokens[0].loc));
+    }
+
+    fn new(ty: ExprTy, loc: Location) -> Self {
+        Self {
+            ty,
+            loc,
+        }
     }
 }
 
