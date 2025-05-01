@@ -2,6 +2,21 @@ use crate::tokeniser::*;
 
 type Ident = String;
 
+macro_rules! todoat {
+	($l:expr) => {{
+		let _: &Location = & $l;
+		panic!("{}: Unfinished code.", $l)
+	}};
+	($l:expr, $msg:literal $(, $rest:tt)?) => {{
+		let _: &Location = & $l;
+		panic!(
+			concat!("{}: not yet implemented: ", $msg), 
+			$l, 
+			$($rest)*
+		)
+	}}
+}
+
 #[derive(Debug, Clone)]
 enum Expr {
 	Block(Block),
@@ -18,7 +33,7 @@ enum Statement {
 		object: Object,
 	},
 	Assign(Assign),
-	Return(Expr),
+	Return(Type, Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +99,33 @@ fn get_and_expect_token(tokens: &mut Vec<Token>, s: &str) -> Option<bool> {
 	Some( expect_token(&token, s) )
 }
 
-fn parse_expr(tokens: &mut Vec<Token>) -> Option<Expr> {
-	todo!("parse expression")
+fn parse_expr(current: Option<Token>, tokens: &mut Vec<Token>) -> Option<(Type, Expr)> {
+	let (ty, rhs);
+	let next = if let Some(c) = current { c } else { next_token(tokens)? };
+	if let Some(int) = next.get_int() {
+		ty = Type::Primitive(Primitive::Int);
+		rhs = Expr::Literal(Literal::Int(int));
+	}
+	else if let Some(float) = next.get_float() {
+		ty = Type::Primitive(Primitive::Float);
+		rhs = Expr::Literal(Literal::Float(float));
+	}
+	else if let Some(string) = next.get_string() {
+		ty = Type::Primitive(Primitive::String);
+		rhs = Expr::Literal(Literal::String(string));
+	}
+	else if let Some("true") = next.get_ident() {
+		ty = Type::Primitive(Primitive::Bool);
+		rhs = Expr::Literal(Literal::Bool(true));
+	}
+	else if let Some("false") = next.get_ident() {
+		ty = Type::Primitive(Primitive::Bool);
+		rhs = Expr::Literal(Literal::Bool(false));
+	}
+	else {
+		todoat!(next.loc, "parse some random expression as rhs: {:?}", next);
+	}
+	return Some((ty, rhs));
 }
 
 fn parse_block(tokens: &mut Vec<Token>) -> Option<Block> {
@@ -116,71 +156,69 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 		// TODO: parse pattern
 		get_and_expect_token(tokens, ":")?;
 		// TODO: parse type
+		let ty = Type::Infer;
 		get_and_expect_token(tokens, ":")?;
 
 		let next = next_token(tokens)?;
 
-		// NOTE: parsing objects will return with a ConstDeclare
-		match next.get_punct() {
-			// function
-			// FIXME: this does not allow for tuples, make it check for after 
-			// parens for the '->'
-			Some("(") => {
-				// TODO: parse function args
-				let args = Type::Void;
-				get_and_expect_token(tokens, ")")?;
-				let next = next_token(tokens)?;
-				let return_type = match next.get_punct() {
-					Some("->") => {
-						let next = next_token(tokens)?;
-						match next.get_ident() {
-							Some("i32") => Type::Primitive(Primitive::Int),
-							Some(other) => todo!("Parse type `{other}`"),
-							None => panic!("Expect return type for function, not {next:?}"),
+		// parse an object declaration (function etc...)
+		{
+			// NOTE: parsing objects will return with a ConstDeclare
+			match next.get_punct() {
+				// function
+				// FIXME: this does not allow for tuples, make it check for after 
+				// parens for the '->'
+				Some("(") => {
+					// TODO: parse function args
+					let args = Type::Void;
+
+					get_and_expect_token(tokens, ")")?;
+					let next = next_token(tokens)?;
+					let return_type = match next.get_punct() {
+						Some("->") => {
+							let next = next_token(tokens)?;
+							match next.get_ident() {
+								Some("i32") => Type::Primitive(Primitive::Int),
+								Some(other) => todoat!(next.loc, "Parse type `{}`", other),
+								None => panic!("Expect return type for function, not {next:?}"),
+							}
 						}
-					}
-					Some("{") => Type::Void,
-					Some(other_punct) => panic!("`{other_punct}` not supported when declaring a constant."), 
-					None => panic!("Function syntax: `ident :: (arg1: ty, ..) -> .. {{}}`"),
-				};
+						Some("{") => Type::Void,
+						Some(other_punct) => panic!("`{other_punct}` not supported when declaring a constant."), 
+						None => panic!("Function syntax: `ident :: (arg1: ty, ..) -> .. {{}}`"),
+					};
 
-				let ret = Statement::ConstDeclare {
-					ident: ident.to_owned(),
-					object: Object::Function(Function {
-						ret: return_type,
-						args,
-						body: parse_block(tokens)?
-					})
-				};
+					let ret = Statement::ConstDeclare {
+						ident: ident.to_owned(),
+						object: Object::Function(Function {
+							ret: return_type,
+							args,
+							body: parse_block(tokens)?
+						})
+					};
 
-				return Some(
-					ret
-				);
+					return Some(
+						ret
+					);
+				}
+				Some("{") => {
+					todoat!(next.loc, "expression assign");
+				}
+				Some(other) => panic!("`{other}` is not correct assignment syntax"),
+				None => (),
 			}
-			Some("{") => {
-				todo!("expression assign");
+
+			match next.get_keyword() {
+				Some("struct") => todoat!(next.loc, "parse struct"),
+				Some("enum") => todoat!(next.loc, "parse enum"),
+				Some(other) => panic!("Keyword `{other}` cannot be used when assigning an object."),
+				None => (),
 			}
-			Some(other) => panic!("`{other}` is not correct assignment syntax"),
-			None => (),
 		}
 
-		match next.get_keyword() {
-			Some("struct") => todo!("parse struct"),
-			Some("enum") => todo!("parse enum"),
-			Some(other) => panic!("Keyword `{other}` cannot be used when assigning an object."),
-			None => (),
-		}
+		// anything else
 
-		let ty;
-		let rhs;
-
-		match next.get_int() {
-			Some(int) => {
-				ty = Type::Primitive(Primitive::Int);
-				rhs = Expr::Literal(Literal::Int(int));
-			},
-			None => todo!("parse some random expression as rhs"),
-		}
+		let (ty, rhs) = parse_expr(Some(next), tokens)?;
 
 		get_and_expect_token(tokens, ";")?;
 
@@ -195,7 +233,10 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 	else if let Some(kword) = next.get_keyword() {
 		match kword {
 			"if" | "switch" | "while" | "loop" => todo!("parse if and stuff statements"),
-			"return" => Some(Statement::Return(parse_expr(tokens)?)),
+			"return" => {
+				let (ty, expr) = parse_expr(None, tokens)?;
+				Some(Statement::Return(ty, expr))
+			}
 			kw => panic!("Keyword `{kw}` cannot be used in statement position"),
 		}
 	}

@@ -240,6 +240,14 @@ impl Token {
         self.ty.get_int()
     }
 
+    pub fn get_float(&self) -> Option<f32> {
+        self.ty.get_float()
+    }
+
+    pub fn get_string(&self) -> Option<String> {
+        self.ty.get_string()
+    }
+
     pub fn get_ident(&self) -> Option<&str> {
         self.ty.get_ident()
     }
@@ -283,7 +291,7 @@ impl Location {
 }
 
 type Int = i32;
-type Float = i32;
+type Float = f32;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
@@ -335,6 +343,20 @@ impl TokenType {
     pub fn get_int(&self) -> Option<i32> {
         match self {
             Self::IntLiteral(i) => Some(*i),
+            _ => None
+        }
+    }
+
+    pub fn get_float(&self) -> Option<f32> {
+        match self {
+            Self::FloatLiteral(f) => Some(*f),
+            _ => None
+        }
+    }
+
+    pub fn get_string(&self) -> Option<String> {
+        match self {
+            Self::StringLiteral(s) => Some(s.clone()),
             _ => None
         }
     }

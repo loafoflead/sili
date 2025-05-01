@@ -19,14 +19,14 @@ fn main() {
 
     let snippet = 
 r#"
-foo :: () -> i32 {
-    x :: 0;
-    y :: 2;
-}
+value :: 5.5;
+name :: "hello";
+boolean :: false;
+boolean :: tru;
 
 main :: () -> i32 {
     a :: 5;
-    b:: 69420;
+    b :: 69420;
 }
 "#;
 
