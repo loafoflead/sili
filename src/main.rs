@@ -17,12 +17,12 @@ fn main() {
         keep_newlines: false,
     };
 
-    let snippet = 
+    let _works = 
 r#"
 value :: 5.5;
 name :: "hello";
 boolean :: false;
-boolean :: tru;
+boolean :: true;
 
 main :: () -> i32 {
     a :: 5;
@@ -30,11 +30,19 @@ main :: () -> i32 {
 }
 "#;
 
+    let snippet = 
+r#"
+foo :: () {}
+
+main :: () -> i32 {
+    a :: 5;
+    foo();
+}
+"#;
+
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
-    let items = syn::parse_items(tokens);
-
-    dbg!(items);
+    let _items = syn::parse_items(tokens);
 }
 
 /*
