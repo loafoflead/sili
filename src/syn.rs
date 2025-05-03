@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use crate::tokeniser::*;
+use crate::KWORDS;
 
 type Ident = String;
 
@@ -40,11 +41,18 @@ macro_rules! panicat {
 		let _: &Location = & $l;
 		panic!(
 			concat!("{}: ", $msg), 
-			$l, 
+			$l,
 			$($rest)*
 		)
 	}}
 }
+
+fn is_reserved(ident: &str) -> bool {
+	KWORDS.contains(&ident) || match ident {
+		"true" | "false" => true,
+		_ => false
+	}
+} 
 
 #[derive(Debug, Clone)]
 enum Expr {
@@ -143,6 +151,19 @@ enum Primitive {
 	Bool,
 	String,
 }
+
+impl Primitive {
+	fn from_str(s: &str) -> Option<Self> {
+		Some(match s {
+			"i32" => Self::Int,
+			"f32" => Self::Float,
+			"bool" => Self::Bool,
+			"string" => Self::String,
+			_ => return None,
+		})
+	}
+}
+
 #[derive(Debug, Clone)]
 enum Literal {
 	Int(i32),
@@ -166,6 +187,97 @@ fn expect_token(token: &Token, s: &str) -> bool {
 fn get_and_expect_token(tokens: &mut Vec<Token>, s: &str) -> Option<()> {
 	let token = next_token(tokens)?;
 	expect_token(&token, s).to_option()
+}
+
+// TODO: stop using Vec<..>, use a slice so you can save/load
+// if an error happens
+fn parse_ident(next: &Token, tokens: &mut Vec<Token>) -> Option<Ident> {
+	if let Some(ident) = next.get_ident() {
+		if tokens[0].is_punct(",") {
+			todoat!(tokens[0].loc, "Parsing patterns is not yet supported, only single identifiers");
+		}
+		else {
+			let r = Some(ident.to_owned());
+			return r;
+		}
+	}
+	None
+}
+
+fn parse_func_call_args(tokens: &mut Vec<Token>) -> Option<FuncCallParams> {
+	if tokens[1].is_punct(":") {
+		todoat!(tokens[1].loc, "named parameters in function calls are not supported yet");
+	}
+
+	let mut exprs: Vec<Expr> = vec![];
+
+	let ret = loop {
+		let next = next_token(tokens)?;
+
+		if next.is_punct(")") || next.is_punct("}") {
+			tokens.insert(0, next);
+			break FuncCallParams::Unnamed(exprs);
+		}
+		else if next.is_punct(",") {
+			continue;
+		}
+		else if let Some((_ty, value)) = parse_expr(Some(next.clone()), tokens) {
+			exprs.push(value)
+		}
+		else {
+			let loc = next.loc;
+			panicat!(loc, "Expected expression in function call parameters, not {:?}", next);
+		}
+	};
+
+	Some(ret)
+}
+
+fn parse_struct_fields(tokens: &mut Vec<Token>) -> Option<Struct> {
+	let mut fields: Vec<Field> = vec![];
+
+	let r = loop {
+		let next = next_token(tokens)?;
+		if let Some(ident) = parse_ident(&next, tokens) {
+			if is_reserved(&ident) { return None };
+
+			get_and_expect_token(tokens, ":")
+				.unwrap_or_else(|| panicat!(tokens[0].loc, "Expected ':' when defining list of fields."));
+
+			let Some(ty) = parse_type(tokens) else {
+				panicat!(next.loc, "Failed to parse type of field.");
+			};
+
+			fields.push(Field::new(&ident, ty));
+		}
+		else if next.is_punct(",") {
+			continue;
+		}
+		else if next.is_punct(")") || next.is_punct("}") {
+			tokens.insert(0, next);
+			break Struct { fields };
+		}
+		else {
+			panicat!(next.loc, "Expected an identifier when defining fields, not {:?}", next);
+		}
+	};
+
+	Some(r)
+}
+
+fn parse_type(tokens: &mut Vec<Token>) -> Option<Type> {
+	let next = next_token(tokens)?;
+	if let Some(ident) = next.get_ident() {
+		if let Some(primitive) = Primitive::from_str(ident) {
+			Some(Type::Primitive(primitive))
+		}
+		else {
+			todoat!(next.loc, "Parse type name from identifier: `{}`", ident)
+		}
+	}
+	else {
+		todoat!(next.loc, "Parse type from: `{:?}`", next);
+	}
 }
 
 fn parse_expr(current: Option<Token>, tokens: &mut Vec<Token>) -> Option<(Type, Expr)> {
@@ -198,6 +310,10 @@ fn parse_expr(current: Option<Token>, tokens: &mut Vec<Token>) -> Option<(Type, 
 }
 
 fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement> {
+	if is_reserved(&ident) {
+		// TODO: wrong loc btw
+		panicat!(tokens[0].loc, "Cannot assign to reserved name: `{}`", ident);
+	}
 	// TODO: parse type
 	get_and_expect_token(tokens, ":")?;
 
@@ -212,18 +328,22 @@ fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement>
 			// parens for the '->'
 			Some("(") => {
 				// TODO: parse function args
-				let args = Struct { fields: vec![] };
+				let args = if !tokens[0].is_punct(")") {
+					let r = parse_struct_fields(tokens)?;
+					get_and_expect_token(tokens, ")")
+						.unwrap_or_else(|| panicat!(next.loc, "expected closing brace when defining function params"));
+					r
+				} else {
+					let _ = next_token(tokens)?;
+					Struct { fields: vec![] }
+				};
 
-				get_and_expect_token(tokens, ")")?;
 				let next = next_token(tokens)?;
 				let return_type = match next.get_punct() {
 					Some("->") => {
-						let next = next_token(tokens)?;
-						let ret = match next.get_ident() {
-							Some("i32") => Type::Primitive(Primitive::Int),
-							Some(other) => todoat!(next.loc, "Parse type `{}`", other),
-							None => panicat!(next.loc, "Expect return type for function, not {:?}", next),
-						};
+						let ret = parse_type(tokens)
+							.unwrap_or_else(|| panicat!(next.loc, "Expect return type for function, not {:?}", next));
+						
 						get_and_expect_token(tokens, "{")?;
 						ret
 					}
@@ -255,6 +375,7 @@ fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement>
 		match next.get_keyword() {
 			Some("struct") => todoat!(next.loc, "parse struct"),
 			Some("enum") => todoat!(next.loc, "parse enum"),
+			Some("import") => todoat!(next.loc, "parse import assignment"),
 			Some(other) => panicat!(next.loc, "Keyword `{}` cannot be used when assigning an object.", other),
 			None => (),
 		}
@@ -301,22 +422,31 @@ fn parse_block(tokens: &mut Vec<Token>) -> Option<Block> {
 fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 	let next = next_token(tokens)?;
 
-	if let Some(ident) = next.get_ident() {
+	if let Some(ident) = parse_ident(&next, tokens) {
 		let next = next_token(tokens)?;
 		if next.is_punct(":") {
+			// ident : <...>
 			return parse_declaration(ident.to_owned(), tokens);
 		}
 		else if next.is_punct("(") {
-			// TODO: parse args
-			get_and_expect_token(tokens, ")")
-				.or_else(|| todoat!(next.loc, "parse function arguments"));
+			// ident ( <...>
+			let passed = if !tokens[0].is_punct(")") {
+				let r = parse_func_call_args(tokens)?;
+				get_and_expect_token(tokens, ")")
+					.unwrap_or_else(|| panicat!(next.loc, "expected closing brace when calling function"));
+				r
+			} else {
+				let _ = next_token(tokens)?;
+				FuncCallParams::Unnamed(vec![])
+			};
 
 			get_and_expect_token(tokens, ";")
-				.or_else(|| panicat!(next.loc, "allow for chaining function call statement"));
+				.unwrap_or_else(|| panicat!(next.loc, "allow for chaining function call statement"));
 
-			Some(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed: FuncCallParams::Unnamed(vec![]) }))
+			Some(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed }))
 		}
 		else if next.is_punct(",") {
+			// ident , <...>
 			todoat!(next.loc, "Parse declaration with pattern");
 		}
 		else {
@@ -325,7 +455,8 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 	}
 	else if let Some(kword) = next.get_keyword() {
 		match kword {
-			"if" | "switch" | "while" | "loop" => todo!("parse if and stuff statements"),
+			"if" | "switch" | "while" | "loop" => todoat!(next.loc, "parse if and stuff statements"),
+			"extern" => todoat!(next.loc, "parse naked import statement"),
 			"return" => {
 				let (ty, expr) = parse_expr(None, tokens)?;
 				Some(Statement::Return(ty, expr))

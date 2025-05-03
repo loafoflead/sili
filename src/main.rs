@@ -32,11 +32,11 @@ main :: () -> i32 {
 
     let snippet = 
 r#"
-foo :: () {}
+foo :: (input: string, height: f32) {}
 
-main :: () -> i32 {
+main :: () -> string {
     a :: 5;
-    foo();
+    foo("hello", 7.7);
 }
 "#;
 
