@@ -145,11 +145,18 @@ impl Tokeniser {
                 puncts.sort_by(|a: &&&str, b: &&&str| a.len().cmp(&b.len()));
                 puncts.reverse();
                 for punct in puncts {
-                    for (i, pc) in punct.chars().enumerate() {
-                        if pc != chars[idx + i] {
-                            eprintln!("{pc}, {}", chars[idx + i]);
-                            continue;
+                    'punct_characters: for (i, pc) in punct.chars().enumerate() {
+                        // the punct we're comparing against is longer than the end of the file
+                        if chars.len() < idx + i {
+                            eprintln!("reached eof when calculating puncts");
+                            break 'punct_characters;
                         }
+                        // the punct we're comparing against is the wrong one
+                        else if pc != chars[idx + i] {
+                            eprintln!("punctuation character: {pc}, real character: {}", chars[idx + i]);
+                            break 'punct_characters;
+                        }
+
                         if i == punct.len() - 1 {
                             if !buf.trim().is_empty() {
                                 tokens.push(Token::new(buf.as_str().trim(), line, column_og, column)?);

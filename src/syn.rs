@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::tokeniser::*;
 use crate::KWORDS;
+use std::ops::Index;
 
 type Ident = String;
 
@@ -53,6 +54,48 @@ fn is_reserved(ident: &str) -> bool {
 		_ => false
 	}
 } 
+
+// 'inner outlives 'outer
+#[derive(Debug, Clone, Copy)]
+struct TokenSlice<'a> {
+	tokens: &'a [Token],
+	loc: usize,
+}
+
+impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
+	fn next(&'outer mut self) -> Option<&'inner Token> {
+		let r = self.tokens.get(self.loc);
+		self.loc += 1;
+		r
+	}
+
+	fn expect(&self, s: &str) -> bool {
+		let token = self.tokens.get(0).expect("Reached end of token stream when expecting.");
+		let tokcond = if let Some(stok) = Token::from_str(s) { stok == *token  } else { false };
+		token.is_punct(s)
+		|| token.is_keyword(s)
+		|| tokcond
+	}
+
+	fn next_expect(&mut self, s: &str) -> Option<()> {
+		let next = self.next()?;
+		if expect_token(next, s) { Some(()) } else { None }
+	}
+}
+
+fn expect_token(token: &Token, s: &str) -> bool {
+	let tokcond = if let Some(stok) = Token::from_str(s) { stok == *token  } else { false };
+	token.is_punct(s)
+	|| token.is_keyword(s)
+	|| tokcond
+}
+
+impl<'a> Index<usize> for TokenSlice<'a> {
+    type Output = Token;
+    fn index<'b>(&'b self, i: usize) -> &'b Self::Output {
+        &self.tokens[i]
+    }
+}
 
 #[derive(Debug, Clone)]
 enum Expr {
@@ -172,26 +215,19 @@ enum Literal {
 	Bool(bool),
 }
 
-fn next_token(tokens: &mut Vec<Token>) -> Option<Token> {
-	// TODO: make this a vecDeque (`veckdeck`)
-	(tokens.len() > 0).then(|| tokens.remove(0))
-}
+// fn next_token(tokens: &mut Vec<Token>) -> Option<Token> {
+// 	// TODO: make this a vecDeque (`veckdeck`)
+// 	(tokens.len() > 0).then(|| tokens.remove(0))
+// }
 
-fn expect_token(token: &Token, s: &str) -> bool {
-	let tokcond = if let Some(stok) = Token::from_str(s) { stok == *token  } else { false };
-	token.is_punct(s)
-	|| token.is_keyword(s)
-	|| tokcond
-}
 
-fn get_and_expect_token(tokens: &mut Vec<Token>, s: &str) -> Option<()> {
-	let token = next_token(tokens)?;
-	expect_token(&token, s).to_option()
-}
 
-// TODO: stop using Vec<..>, use a slice so you can save/load
-// if an error happens
-fn parse_ident(next: &Token, tokens: &mut Vec<Token>) -> Option<Ident> {
+// fn get_and_expect_token<'a>(tokens: &'a mut &'a [Token], s: &str) -> Option<()> {
+// 	let token = tokens.next()?;
+// 	expect_token(&token, s).to_option()
+// }
+
+fn parse_ident(next: &Token, tokens: &TokenSlice) -> Option<Ident> {
 	if let Some(ident) = next.get_ident() {
 		if tokens[0].is_punct(",") {
 			todoat!(tokens[0].loc, "Parsing patterns is not yet supported, only single identifiers");
@@ -204,28 +240,30 @@ fn parse_ident(next: &Token, tokens: &mut Vec<Token>) -> Option<Ident> {
 	None
 }
 
-fn parse_func_call_args(tokens: &mut Vec<Token>) -> Option<FuncCallParams> {
-	if tokens[1].is_punct(":") {
+fn parse_func_call_args(tokens: &mut TokenSlice) -> Option<FuncCallParams> {
+	if tokens[1].is_punct("=") {
 		todoat!(tokens[1].loc, "named parameters in function calls are not supported yet");
 	}
 
 	let mut exprs: Vec<Expr> = vec![];
 
 	let ret = loop {
-		let next = next_token(tokens)?;
+		let og = tokens.loc;
+
+		let next: &Token = tokens.next()?;
+		let loc = next.loc;
 
 		if next.is_punct(")") || next.is_punct("}") {
-			tokens.insert(0, next);
+			tokens.loc = og;
 			break FuncCallParams::Unnamed(exprs);
 		}
 		else if next.is_punct(",") {
 			continue;
 		}
-		else if let Some((_ty, value)) = parse_expr(Some(next.clone()), tokens) {
+		else if let Some((_ty, value)) = parse_expr(Some(next), tokens) {
 			exprs.push(value)
 		}
 		else {
-			let loc = next.loc;
 			panicat!(loc, "Expected expression in function call parameters, not {:?}", next);
 		}
 	};
@@ -233,15 +271,16 @@ fn parse_func_call_args(tokens: &mut Vec<Token>) -> Option<FuncCallParams> {
 	Some(ret)
 }
 
-fn parse_struct_fields(tokens: &mut Vec<Token>) -> Option<Struct> {
+fn parse_struct_fields(tokens: &mut TokenSlice) -> Option<Struct> {
 	let mut fields: Vec<Field> = vec![];
 
 	let r = loop {
-		let next = next_token(tokens)?;
+		let og = tokens.loc;
+		let next = tokens.next()?;
 		if let Some(ident) = parse_ident(&next, tokens) {
 			if is_reserved(&ident) { return None };
 
-			get_and_expect_token(tokens, ":")
+			tokens.next_expect(":")
 				.unwrap_or_else(|| panicat!(tokens[0].loc, "Expected ':' when defining list of fields."));
 
 			let Some(ty) = parse_type(tokens) else {
@@ -254,7 +293,7 @@ fn parse_struct_fields(tokens: &mut Vec<Token>) -> Option<Struct> {
 			continue;
 		}
 		else if next.is_punct(")") || next.is_punct("}") {
-			tokens.insert(0, next);
+			tokens.loc = og;
 			break Struct { fields };
 		}
 		else {
@@ -265,8 +304,8 @@ fn parse_struct_fields(tokens: &mut Vec<Token>) -> Option<Struct> {
 	Some(r)
 }
 
-fn parse_type(tokens: &mut Vec<Token>) -> Option<Type> {
-	let next = next_token(tokens)?;
+fn parse_type(tokens: &mut TokenSlice) -> Option<Type> {
+	let next = tokens.next()?;
 	if let Some(ident) = next.get_ident() {
 		if let Some(primitive) = Primitive::from_str(ident) {
 			Some(Type::Primitive(primitive))
@@ -280,9 +319,9 @@ fn parse_type(tokens: &mut Vec<Token>) -> Option<Type> {
 	}
 }
 
-fn parse_expr(current: Option<Token>, tokens: &mut Vec<Token>) -> Option<(Type, Expr)> {
+fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> Option<(Type, Expr)> {
 	let (ty, rhs);
-	let next = if let Some(c) = current { c } else { next_token(tokens)? };
+	let next = if let Some(c) = current { c } else { tokens.next()? };
 	if let Some(int) = next.get_int() {
 		ty = Type::Primitive(Primitive::Int);
 		rhs = Expr::Literal(Literal::Int(int));
@@ -309,15 +348,15 @@ fn parse_expr(current: Option<Token>, tokens: &mut Vec<Token>) -> Option<(Type, 
 	return Some((ty, rhs));
 }
 
-fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement> {
+fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> Option<Statement> {
 	if is_reserved(&ident) {
 		// TODO: wrong loc btw
 		panicat!(tokens[0].loc, "Cannot assign to reserved name: `{}`", ident);
 	}
 	// TODO: parse type
-	get_and_expect_token(tokens, ":")?;
+	tokens.next_expect(":")?;
 
-	let next = next_token(tokens)?;
+	let next = tokens.next()?;
 
 	// parse an object declaration (function etc...)
 	{
@@ -330,21 +369,21 @@ fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement>
 				// TODO: parse function args
 				let args = if !tokens[0].is_punct(")") {
 					let r = parse_struct_fields(tokens)?;
-					get_and_expect_token(tokens, ")")
+					tokens.next_expect(")")
 						.unwrap_or_else(|| panicat!(next.loc, "expected closing brace when defining function params"));
 					r
 				} else {
-					let _ = next_token(tokens)?;
+					let _ = tokens.next()?;
 					Struct { fields: vec![] }
 				};
 
-				let next = next_token(tokens)?;
+				let next = tokens.next()?;
 				let return_type = match next.get_punct() {
 					Some("->") => {
 						let ret = parse_type(tokens)
 							.unwrap_or_else(|| panicat!(next.loc, "Expect return type for function, not {:?}", next));
 						
-						get_and_expect_token(tokens, "{")?;
+						tokens.next_expect("{")?;
 						ret
 					}
 					Some("{") => Type::Void,
@@ -381,11 +420,12 @@ fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement>
 		}
 	}
 
+
 	// anything else
 
-	let (ty, rhs) = parse_expr(Some(next), tokens)?;
+	let (ty, rhs) = parse_expr(Some(&next), tokens)?;
 
-	get_and_expect_token(tokens, ";")?;
+	tokens.next_expect(";")?;
 
 	Some(
 		Statement::ConstAssign(Assign {
@@ -396,18 +436,18 @@ fn parse_declaration(ident: Ident, tokens: &mut Vec<Token>) -> Option<Statement>
 	)
 }
 
-fn parse_block(tokens: &mut Vec<Token>) -> Option<Block> {
-	// get_and_expect_token(tokens, "{").expect("Block expects opening accolade");
+fn parse_block(tokens: &mut TokenSlice) -> Option<Block> {
+	// tokens.next_expect("{").expect("Block expects opening accolade");
 
 	let mut stmts = Vec::new();
-	// dbg!(&tokens);
 	loop {
-		let next = tokens.get(0)?;
-		if expect_token(next, "}") { 
-			let _ = next_token(tokens);
+		let og = tokens.loc;
+		let next = tokens.next()?;
+		if expect_token(&next, "}") {
 			break;
 		};
 
+		tokens.loc = og;
 		let loc = next.loc;
 		if let Some(stmt) = parse_stmt(tokens) {
 			stmts.push(stmt);
@@ -419,11 +459,11 @@ fn parse_block(tokens: &mut Vec<Token>) -> Option<Block> {
 	Some(Block(stmts))
 }
 
-fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
-	let next = next_token(tokens)?;
+fn parse_stmt(tokens: &mut TokenSlice) -> Option<Statement> {
+	let next = tokens.next()?;
 
 	if let Some(ident) = parse_ident(&next, tokens) {
-		let next = next_token(tokens)?;
+		let next = tokens.next()?;
 		if next.is_punct(":") {
 			// ident : <...>
 			return parse_declaration(ident.to_owned(), tokens);
@@ -432,15 +472,15 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 			// ident ( <...>
 			let passed = if !tokens[0].is_punct(")") {
 				let r = parse_func_call_args(tokens)?;
-				get_and_expect_token(tokens, ")")
+				tokens.next_expect(")")
 					.unwrap_or_else(|| panicat!(next.loc, "expected closing brace when calling function"));
 				r
 			} else {
-				let _ = next_token(tokens)?;
+				let _ = tokens.next()?;
 				FuncCallParams::Unnamed(vec![])
 			};
 
-			get_and_expect_token(tokens, ";")
+			tokens.next_expect(";")
 				.unwrap_or_else(|| panicat!(next.loc, "allow for chaining function call statement"));
 
 			Some(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed }))
@@ -450,7 +490,7 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 			todoat!(next.loc, "Parse declaration with pattern");
 		}
 		else {
-			panicat!(next.loc, "unexpected identifier.")
+			panicat!(next.loc, "unexpected identifier {:?}", next);
 		}
 	}
 	else if let Some(kword) = next.get_keyword() {
@@ -471,7 +511,11 @@ fn parse_stmt(tokens: &mut Vec<Token>) -> Option<Statement> {
 
 pub fn parse_items(mut tokens: Vec<Token>) -> Option<()> {
 	let mut stmts: Vec<Statement> = Vec::new();
-	while !tokens[0].is_eof() {
+	let mut tokens = TokenSlice {
+		tokens: tokens.as_slice(),
+		loc: 0,
+	};
+	while !tokens.tokens[tokens.loc].is_eof() {
 		stmts.push(parse_stmt(&mut tokens).unwrap());
 	}
 

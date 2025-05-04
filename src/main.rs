@@ -6,29 +6,43 @@ mod syn;
 mod tokeniser;
 
 const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", ",", "->", "<", ">", "-", "+", "{]*=*["];
-const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return"];
+const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
 
-fn main() {
-    let tokeniser = tokeniser::Tokeniser {
+fn create_tokeniser() -> tokeniser::Tokeniser {
+    tokeniser::Tokeniser {
         puncts: PUNCTS,
         keywords: KWORDS,
         string_enter: '"',
         string_exit: '"',
         keep_newlines: false,
-    };
+    }
+}
 
-    let _works = 
+#[test] 
+fn basic() {
+    let tokeniser = create_tokeniser();
+
+    let snippet = 
 r#"
 value :: 5.5;
 name :: "hello";
-boolean :: false;
-boolean :: true;
+boolean_f :: false;
+boolean_t :: true;
 
 main :: () -> i32 {
     a :: 5;
     b :: 69420;
 }
 "#;
+
+    let tokens = tokeniser.tokenise(snippet).unwrap();
+
+    assert!(syn::parse_items(tokens).is_some());
+}
+
+#[test] 
+fn function_arguments_and_fields() {
+    let tokeniser = create_tokeniser();
 
     let snippet = 
 r#"
@@ -37,6 +51,20 @@ foo :: (input: string, height: f32) {}
 main :: () -> string {
     a :: 5;
     foo("hello", 7.7);
+}
+"#;
+
+    let tokens = tokeniser.tokenise(snippet).unwrap();
+
+    assert!(syn::parse_items(tokens).is_some());
+}
+
+fn main() {
+    let tokeniser = create_tokeniser();
+    let snippet = 
+r#"
+main :: () {
+    a :: 5;
 }
 "#;
 
