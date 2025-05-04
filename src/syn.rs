@@ -38,7 +38,14 @@ macro_rules! panicat {
 		let _: &Location = & $l;
 		panic!("{}: explicit panic.", $l)
 	}};
-	($l:expr, $msg:literal $(, $rest:tt)?) => {{
+	($l:expr, $msg:literal) => {{
+		let _: &Location = & $l;
+		panic!(
+			concat!("{}: ", $msg), 
+			$l
+		)
+	}};
+	($l:expr, $msg:literal, $($rest:tt)*) => {{
 		let _: &Location = & $l;
 		panic!(
 			concat!("{}: ", $msg), 
@@ -49,7 +56,7 @@ macro_rules! panicat {
 }
 
 fn is_reserved(ident: &str) -> bool {
-	KWORDS.contains(&ident) || match ident {
+	KWORDS.contains(&ident) || Primitive::from_str(ident).is_some() || match ident {
 		"true" | "false" => true,
 		_ => false
 	}
@@ -77,9 +84,9 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 		|| tokcond
 	}
 
-	fn next_expect(&mut self, s: &str) -> Option<()> {
+	fn next_expect(&'outer mut self, s: &str) -> Option<&'inner Token> {
 		let next = self.next()?;
-		if expect_token(next, s) { Some(()) } else { None }
+		if expect_token(next, s) { Some(next) } else { None }
 	}
 }
 
@@ -97,14 +104,14 @@ impl<'a> Index<usize> for TokenSlice<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Expr {
 	Block(Block),
 	Literal(Literal),
 	FuncCall(FuncCall),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Statement {
 	ConstAssign(Assign),
 	// untyped assignment (functions, structs, enums)
@@ -117,19 +124,19 @@ enum Statement {
 	Return(Type, Expr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct FuncCall {
 	ident: Ident,
 	passed: FuncCallParams,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum FuncCallParams {
 	// TODO: named
 	Unnamed(Vec<Expr>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Field {
 	name: Ident,
 	ty: Type,
@@ -144,41 +151,41 @@ impl Field {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Object {
 	Function(Function),
 	Tuple(Vec<Type>),
 	Struct(Struct),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Function {
 	ret: Type,
 	args: Struct,
 	body: Block,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Struct {
 	fields: Vec<Field>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Block(Vec<Statement>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Assign {
 	lhs: Pattern,
 	ty: Type,
 	rhs: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Pattern {
 	Ident(Ident),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Type {
 	Primitive(Primitive),
 	// TODO:
@@ -187,7 +194,7 @@ enum Type {
 	Infer,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Primitive {
 	Int,
 	Float,
@@ -207,7 +214,7 @@ impl Primitive {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Literal {
 	Int(i32),
 	Float(f32),
@@ -343,6 +350,9 @@ fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> Option<(Type,
 		rhs = Expr::Literal(Literal::Bool(false));
 	}
 	else {
+		dbg!(&tokens.tokens[tokens.loc..]);
+		dbg!(&next);
+
 		todoat!(next.loc, "parse some random expression as rhs: {:?}", next);
 	}
 	return Some((ty, rhs));
@@ -353,10 +363,20 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> Option<Statement>
 		// TODO: wrong loc btw
 		panicat!(tokens[0].loc, "Cannot assign to reserved name: `{}`", ident);
 	}
-	// TODO: parse type
-	tokens.next_expect(":")?;
 
-	let next = tokens.next()?;
+	let mut next = tokens.next()?;
+
+	// TODO: make typing an object an error
+	let decl_ty = if next.is_punct(":") {
+		next = tokens.next()?;
+		Type::Infer
+	} else {
+		tokens.loc -= 1;
+		let r = parse_type(tokens)?;
+		tokens.next_expect(":")?;
+		next = tokens.next()?;
+		r
+	};
 
 	// parse an object declaration (function etc...)
 	{
@@ -420,10 +440,25 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> Option<Statement>
 		}
 	}
 
-
 	// anything else
 
-	let (ty, rhs) = parse_expr(Some(&next), tokens)?;
+	let (expr_ty, rhs) = parse_expr(Some(&next), tokens)?;
+
+	let ty = match (decl_ty, expr_ty) {
+		(Type::Infer, Type::Infer) => Type::Infer,
+		(Type::Infer, parsed) 		 => parsed,
+		(declared, 		 Type::Infer) => declared,
+		(decl, parsed) => if decl == parsed {
+			decl
+		} else {
+			panicat!(
+				next.loc,
+				"Mismatch between type of value and declared type. Declared: {:?}, value: {:?}", 
+				decl,
+				parsed,
+			)
+		}
+	};
 
 	tokens.next_expect(";")?;
 

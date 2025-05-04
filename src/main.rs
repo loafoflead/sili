@@ -49,7 +49,7 @@ r#"
 foo :: (input: string, height: f32) {}
 
 main :: () -> string {
-    a :: 5;
+    a : i32 : 5;
     foo("hello", 7.7);
 }
 "#;
