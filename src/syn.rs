@@ -88,6 +88,13 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 		let next = self.next()?;
 		if expect_token(next, s) { Some(next) } else { None }
 	}
+
+	fn next_expect_from(&'outer mut self, strs: &[&str]) -> Option<()> {
+		let next = self.next()?;
+		strs.into_iter()
+			.find(|s| expect_token(next, s))
+			.map(|_| Some(()))?
+	}
 }
 
 fn expect_token(token: &Token, s: &str) -> bool {
@@ -220,6 +227,12 @@ enum Literal {
 	Float(f32),
 	String(String),
 	Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Assignment {
+	Comptime,
+	Mutable,
 }
 
 // fn next_token(tokens: &mut Vec<Token>) -> Option<Token> {
@@ -366,14 +379,19 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> Option<Statement>
 
 	let mut next = tokens.next()?;
 
+	let assign_kind = if next.is_punct(":") { Some(Assignment::Comptime) }
+	else if next.is_punct("=") { Some(Assignment::Mutable) }
+	else { None };
+
 	// TODO: make typing an object an error
-	let decl_ty = if next.is_punct(":") {
+	let decl_ty = if next.is_punct(":") || next.is_punct("=") {
 		next = tokens.next()?;
 		Type::Infer
-	} else {
+	}
+	else {
 		tokens.loc -= 1;
 		let r = parse_type(tokens)?;
-		tokens.next_expect(":")?;
+		tokens.next_expect_from(&["=", ":"])?;
 		next = tokens.next()?;
 		r
 	};
@@ -451,6 +469,7 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> Option<Statement>
 		(decl, parsed) => if decl == parsed {
 			decl
 		} else {
+			// TODO: be more permissive here (i.e. n : f32 = 5 should work fine)
 			panicat!(
 				next.loc,
 				"Mismatch between type of value and declared type. Declared: {:?}, value: {:?}", 
