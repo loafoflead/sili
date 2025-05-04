@@ -29,10 +29,10 @@ _.* = import module;
 # Syntax example:
 
 ```go
-import std.io;
+import std->io;
 
 Response :: struct {
-	msg: str,
+	msg: string,
 	etc: bool,
 }
 
@@ -42,37 +42,24 @@ Example :: enum {
 	Three,
 }
 
-Default :: trait {
-	default :: fn() -> Self;
-}
-
-Example.* :: impl(Default) {
-	default :: fn() -> Self {
-		.One
-	}
-}
-
-Example.* :: impl {
-	next :: fn(&self) -> Self {
-		switch self {
-			.One   => .Two,
-			.Two   => .Three,
-			.Three => .One,
-		}
-	}
-}
-
 main :: () -> i32 {
-	io.print("hello world!");
-	input := io.read_line() else {
+	print("hello world!");
+	input := read_line() else {
 		panic("Failed to read from console");
 	};
 
+	example := Example->One;
+	switch example {
+		One => print("One"),
+		Two => print("Two"),
+		Three => print("Three"),
+	}
+
 	if input == "hi" {
-		io.print("hey!");
+		print("hey!");
 	}
 	else {
-		io.print(f"You said: {input}, and I dont blame you!");
+		print("You said: {}, and I dont blame you!", input);
 	}
 }
 ```
