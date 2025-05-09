@@ -213,6 +213,12 @@ pub struct Token {
     pub loc: Location,
 }
 
+impl Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "{}", self.ty)
+    }
+}
+
 impl Token {
     fn new(text: &str, line: usize, column_start: usize, column_end: usize) -> Option<Self> {
         Some(Self {
@@ -310,6 +316,21 @@ pub enum TokenType {
     Punct(String),
     Newline,
     Eof,
+}
+
+impl Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Self::IntLiteral(int) => write!(f, "{}_int", int),
+            Self::FloatLiteral(float) => write!(f, "{}_float", float),
+            Self::StringLiteral(st) => write!(f, "\"{}\"", st),
+            Self::Ident(ident) => write!(f, "{}", ident),
+            Self::Keyword(kw) => write!(f, "{}", kw),
+            Self::Punct(p) => write!(f, "{}", p),
+            Self::Newline => write!(f, "\\n"),
+            Self::Eof => write!(f, "[EOF]"),
+        }
+    }
 }
 
 impl TokenType {

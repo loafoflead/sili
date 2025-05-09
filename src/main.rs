@@ -5,7 +5,7 @@
 mod syn;
 mod tokeniser;
 
-const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", ",", "->", "<", ">", "-", "+", "{]*=*["];
+const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", "=", ",", "->", "<", ">", "-", "+", "{]*=*["];
 const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
 
 fn create_tokeniser() -> tokeniser::Tokeniser {
@@ -63,8 +63,9 @@ fn main() {
     let tokeniser = create_tokeniser();
     let snippet = 
 r#"
-main :: () {
+main :: () -> i32 {
     a :: 5;
+    b := 5;
 }
 "#;
 
