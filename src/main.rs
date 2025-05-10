@@ -4,6 +4,7 @@
 
 mod syn;
 mod tokeniser;
+mod type_check;
 
 const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", "=", ",", "->", "<", ">", "-", "+", "{]*=*["];
 const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
@@ -51,6 +52,7 @@ foo :: (input: string, height: f32) {}
 main :: () -> string {
     a: i32 : 5;
     foo("hello", 7.7);
+    return 5;
 }
 
 Thing :: struct {
@@ -78,7 +80,9 @@ main :: () {
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
-    let _items = syn::parse_items(snippet, tokens);
+    let items = syn::parse_items(snippet, tokens).unwrap();
+
+    let _correct = type_check::check(items).unwrap();
 }
 
 /*

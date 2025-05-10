@@ -4,7 +4,7 @@ use crate::KWORDS;
 use std::ops::Index;
 use std::fmt::{self, Display};
 
-type Ident = String;
+pub type Ident = String;
 type SynResult<T> = Result<T, SyntaxErrorLoc>;
 
 trait Optionalise {
@@ -20,16 +20,27 @@ impl Optionalise for bool {
 	}
 }
 
+#[macro_export]
 macro_rules! todoat {
 	($l:expr) => {{
-		let _: &Location = & $l;
+		let _: &crate::tokeniser::Location = & $l;
 		panic!("{}: Unfinished code.", $l)
 	}};
 	($l:expr, $msg:literal $(, $rest:tt)?) => {{
-		let _: &Location = & $l;
+		let _: &crate::tokeniser::Location = & $l;
 		panic!(
 			concat!("{}: not yet implemented: ", $msg), 
 			$l, 
+			$($rest)*
+		)
+	}};
+	($l:ident => $l2:ident, $msg:literal $(, $rest:tt)?) => {{
+		let _: (&crate::tokeniser::Location, &crate::tokeniser::Location) = (& $l, & $l2);
+		// TODO: render this from to business
+		let _ = $l2; 
+		panic!(
+			concat!("{}: not yet implemented: ", $msg), 
+			$l,
 			$($rest)*
 		)
 	}}
@@ -58,9 +69,9 @@ macro_rules! panicat {
 }
 
 #[derive(Debug)]
-struct SyntaxErrorLoc {
-	loc: Option<Location>,
-	err: SyntaxError,
+pub struct SyntaxErrorLoc {
+	pub loc: Option<Location>,
+	pub err: SyntaxError,
 }
 
 impl Display for SyntaxErrorLoc {
@@ -75,7 +86,7 @@ impl Display for SyntaxErrorLoc {
 }
 
 #[derive(Debug)]
-enum SyntaxError {
+pub enum SyntaxError {
 	Expected { expect: Vec<String>, got: Token },
 	InvalidIdent(Token),
 	ReservedIdent(Token),
@@ -93,13 +104,16 @@ impl SyntaxError {
 		} else { None };
 		SyntaxErrorLoc { loc, err: self }
 	}
+
+	fn somewhere(self) -> SyntaxErrorLoc {
+		SyntaxErrorLoc { loc: None, err: self }
+	}
 }
 
 impl Display for SyntaxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
         	Self::Expected { expect, got } => {
-        		let len = expect.len();
         		write!(
         			f, 
         			"Expected {one_of}{expect}, not {got}.",
@@ -167,6 +181,11 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 			got: next.clone(),
 		}.at(next.loc))
 	}
+
+	fn current_loc(&self) -> SynResult<Location> {
+		let token = self.tokens.get(0).ok_or(SyntaxError::EndOfTokens.somewhere())?;
+		Ok(token.loc)
+	}
 }
 
 fn expect_token(token: &Token, s: &str) -> SynResult<()> {
@@ -200,15 +219,22 @@ impl<'a> Index<usize> for TokenSlice<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Expr {
+pub struct StatementLoc {
+	pub stmt: Statement,
+	pub from: Location,
+	pub to: Location,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
 	Block(Block),
 	Literal(Literal),
 	FuncCall(FuncCall),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Statement {
-	Assign(Assign),
+pub enum Statement {
+	Assignment(Assign),
 	// untyped assignment (functions, structs, enums)
 	TypeDeclaration {
 		ident: Ident,
@@ -222,22 +248,32 @@ enum Statement {
 	Return(Type, Expr),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct FuncCall {
-	ident: Ident,
-	passed: FuncCallParams,
+impl Statement {
+	fn between(self, from: Location, to: Location) -> StatementLoc {
+		StatementLoc {
+			stmt: self,
+			from,
+			to,
+		}
+	}
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum FuncCallParams {
+pub struct FuncCall {
+	pub ident: Ident,
+	pub passed: FuncCallParams,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FuncCallParams {
 	// TODO: named
 	Unnamed(Vec<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Field {
-	name: Ident,
-	ty: Type,
+pub struct Field {
+	pub name: Ident,
+	pub ty: Type,
 }
 
 impl Field {
@@ -250,41 +286,41 @@ impl Field {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Object {
+pub enum Object {
 	Tuple(Vec<Type>),
 	Struct(Struct),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Function {
-	ret: Type,
-	args: Struct,
-	body: Block,
+pub struct Function {
+	pub ret: Type,
+	pub args: Struct,
+	pub body: Block,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Struct {
-	fields: Vec<Field>,
+pub struct Struct {
+	pub fields: Vec<Field>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Block(Vec<Statement>);
+pub struct Block(Vec<StatementLoc>);
 
 #[derive(Debug, Clone, PartialEq)]
-struct Assign {
-	lhs: Pattern,
-	ty: Type,
-	rhs: Expr,
-	kind: Assignment,
+pub struct Assign {
+	pub lhs: Pattern,
+	pub ty: Type,
+	pub rhs: Expr,
+	pub kind: Assignment,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Pattern {
+pub enum Pattern {
 	Ident(Ident),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Type {
+pub enum Type {
 	Primitive(Primitive),
 	// TODO:
 	Object(Box<Object>),
@@ -293,7 +329,7 @@ enum Type {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Primitive {
+pub enum Primitive {
 	Int,
 	Float,
 	Bool,
@@ -313,7 +349,7 @@ impl Primitive {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Literal {
+pub enum Literal {
 	Int(i32),
 	Float(f32),
 	String(String),
@@ -321,7 +357,7 @@ enum Literal {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Assignment {
+pub enum Assignment {
 	Comptime,
 	Mutable,
 }
@@ -462,13 +498,14 @@ fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> SynResult<(Ty
 	return Ok((ty, rhs));
 }
 
-fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Statement> {
+fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
 	if is_reserved(&ident) {
 		// TODO: wrong loc btw
 		panicat!(tokens[0].loc, "Cannot assign to reserved name: `{}`", ident);
 	}
 
 	let mut next = tokens.next()?;
+	let first_loc = next.loc;
 	let mut punct_loc = next.loc;
 
 	let mut assign_kind = if next.is_punct(":") { Some(Assignment::Comptime) }
@@ -537,7 +574,7 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 						args,
 						body: parse_block(tokens)?
 					}
-				};
+				}.between(first_loc, tokens.current_loc()?);
 
 				assert_assign(Assignment::Comptime);
 
@@ -563,7 +600,7 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 				return Ok(Statement::TypeDeclaration {
 					ident: ident.to_owned(),
 					ty: Object::Struct(struc)
-				});
+				}.between(first_loc, tokens.current_loc()?));
 			}
 			Some("enum") => todoat!(next.loc, "parse enum"),
 			Some("import") => todoat!(next.loc, "parse import assignment"),
@@ -596,12 +633,12 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 	tokens.next_expect(";")?;
 
 	Ok(
-		Statement::Assign(Assign {
+		Statement::Assignment(Assign {
 			lhs: Pattern::Ident(ident),
 			ty,
 			rhs,
 			kind: assign_kind,
-		})
+		}).between(first_loc, tokens.current_loc()?)
 	)
 }
 
@@ -617,14 +654,14 @@ fn parse_block(tokens: &mut TokenSlice) -> SynResult<Block> {
 		};
 
 		tokens.loc = og;
-		let loc = next.loc;
 		stmts.push(parse_stmt(tokens)?);
 	}
 	Ok(Block(stmts))
 }
 
-fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<Statement> {
+fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
 	let next = tokens.next()?;
+	let first_loc = next.loc;
 
 	if let Ok(ident) = parse_ident(&next, tokens) {
 		let next = tokens.next()?;
@@ -646,7 +683,7 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<Statement> {
 			tokens.next_expect(";")
 				.unwrap_or_else(|_| panicat!(next.loc, "allow for chaining function call statement"));
 
-			Ok(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed }))
+			Ok(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed }).between(first_loc, tokens.current_loc()?))
 		}
 		else if next.is_punct(",") {
 			// ident , <...>
@@ -662,7 +699,8 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<Statement> {
 			"extern" => todoat!(next.loc, "parse naked import statement"),
 			"return" => {
 				let (ty, expr) = parse_expr(None, tokens)?;
-				Ok(Statement::Return(ty, expr))
+				tokens.next_expect(";")?;
+				Ok(Statement::Return(ty, expr).between(first_loc, tokens.current_loc()?))
 			}
 			kw => panicat!(next.loc, "Keyword `{}` cannot be used as a statement position for now.", kw),
 		}
@@ -672,8 +710,8 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<Statement> {
 	}
 }
 
-pub fn parse_items(snippet: &str, mut tokens: Vec<Token>) -> Option<()> {
-	let mut stmts: Vec<Statement> = Vec::new();
+pub fn parse_items(snippet: &str, tokens: Vec<Token>) -> Option<Vec<StatementLoc>> {
+	let mut stmts: Vec<StatementLoc> = Vec::new();
 	let mut tokens = TokenSlice {
 		tokens: tokens.as_slice(),
 		loc: 0,
@@ -696,9 +734,7 @@ pub fn parse_items(snippet: &str, mut tokens: Vec<Token>) -> Option<()> {
 		}
 	}
 
-	dbg!(stmts);
-
-	Some(())
+	Some(stmts)
 	// match &tokens[0].ty {
 	// 	TokenType::IntLiteral(int) 			=> todo!("parse int literals"),
 	//     TokenType::FloatLiteral(float)		=> todo!("parse float literals"),

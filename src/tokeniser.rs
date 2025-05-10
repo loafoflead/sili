@@ -94,8 +94,6 @@ impl Tokeniser {
             return None;
         };
         let string = text.to_string();
-        let lines = string.split('\n').collect::<Vec<&str>>();
-        dbg!(&string);
         let chars = string.chars().collect::<Vec<char>>();
 
         let mut line = 1;
@@ -138,7 +136,6 @@ impl Tokeniser {
                 }
                 else if !buf.trim().is_empty() {
                     tokens.push(Token::new(buf.as_str().trim(), line, column_og, column)?);
-                    column_og = column;
                     buf.clear();
                 }
                 column_og = column + 1;
