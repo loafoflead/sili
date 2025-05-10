@@ -6,7 +6,7 @@ mod syn;
 mod tokeniser;
 mod type_check;
 
-const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", "=", ",", "->", "<", ">", "-", "+", "{]*=*["];
+const PUNCTS: &[&str] = &["(", ")", "{", "}", ";", ":", "=", ",", ".", "->", "<", ">", "-", "+", "{]*=*["];
 const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
 
 fn create_tokeniser() -> tokeniser::Tokeniser {
@@ -25,7 +25,7 @@ fn basic() {
 
     let snippet = 
 r#"
-value :: 5.5;
+value :: 5;
 name :: "hello";
 boolean_f :: false;
 boolean_t :: true;
@@ -51,7 +51,7 @@ foo :: (input: string, height: f32) {}
 
 main :: () -> string {
     a: i32 : 5;
-    foo("hello", 7.7);
+    foo("hello", 7);
     return 5;
 }
 
@@ -72,15 +72,18 @@ fn main() {
 
     let snippet = 
 r#"
-main :: () {
+main :: () -> i32 {
     a : i32 : 5;
     b := 5;
+    return a;
 }
 "#;
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
     let items = syn::parse_items(snippet, tokens).unwrap();
+
+    dbg!(&items);
 
     let _correct = type_check::check(items).unwrap();
 }

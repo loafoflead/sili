@@ -46,20 +46,21 @@ macro_rules! todoat {
 	}}
 }
 
+#[macro_export]
 macro_rules! panicat {
 	($l:expr) => {{
-		let _: &Location = & $l;
+		let _: &crate::tokeniser::Location = & $l;
 		panic!("{}: explicit panic.", $l)
 	}};
 	($l:expr, $msg:literal) => {{
-		let _: &Location = & $l;
+		let _: &crate::tokeniser::Location = & $l;
 		panic!(
 			concat!("{}: ", $msg), 
 			$l
 		)
 	}};
 	($l:expr, $msg:literal, $($rest:tt)*) => {{
-		let _: &Location = & $l;
+		let _: &crate::tokeniser::Location = & $l;
 		panic!(
 			concat!("{}: ", $msg), 
 			$l,
@@ -90,6 +91,7 @@ pub enum SyntaxError {
 	Expected { expect: Vec<String>, got: Token },
 	InvalidIdent(Token),
 	ReservedIdent(Token),
+	MalformedPath(Token),
 	EndOfTokens,
 }
 
@@ -130,6 +132,7 @@ impl Display for SyntaxError {
         	}
         	Self::EndOfTokens => write!(f, "Unexpectedly reached the end of tokens while building syntax tree."),
         	Self::InvalidIdent(_token) => todo!(),
+        	Self::MalformedPath(token) => write!(f, "Path wasn't expecting a {}", token),
         	Self::ReservedIdent(_token) => todo!(),
         }
     }
@@ -228,6 +231,7 @@ pub struct StatementLoc {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
 	Block(Block),
+	Ident(Ident),
 	Literal(Literal),
 	FuncCall(FuncCall),
 }
@@ -304,7 +308,7 @@ pub struct Struct {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Block(Vec<StatementLoc>);
+pub struct Block(pub Vec<StatementLoc>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assign {
@@ -325,8 +329,28 @@ pub enum Type {
 	// TODO:
 	Object(Box<Object>),
 	Void,
+	// Infer used when we have an expression
+	// but we can't yet figure out it's type
+	// like 'return a', or
+	// 'a :: Type<i32>;'
 	Infer,
+	Identifier(Ident),
+	Path(Vec<Ident>),
 }
+
+impl Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+        	Type::Primitive(p) => write!(f, "primitive({p:?})"),
+        	Type::Object(obj) => todo!("format obj"),
+        	Type::Void => write!(f, "[void]"),
+        	Type::Infer => write!(f, "[inferred]"),
+        	Type::Identifier(ident) => write!(f, "ident({ident})"),
+        	Type::Path(path) => write!(f, "path({})", path.join("::")),
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Primitive {
@@ -458,8 +482,35 @@ fn parse_type(tokens: &mut TokenSlice) -> SynResult<Type> {
 			Ok(Type::Primitive(primitive))
 		}
 		else {
-			todoat!(next.loc, "Parse type name from identifier: `{}`", ident)
+			let loc = tokens.loc;
+			let mut next = tokens.next()?;
+			if next.is_punct("<") {
+				todoat!(next.loc, "Parse generics: `{:?}`", next);
+			}
+			else if next.is_punct(".") {
+				todoat!(next.loc, "Parse paths: `{:?}`", next);
+
+				// let mut path = vec![ident.to_owned()];
+				// while next.is_punct(".") {
+				// 	next = tokens.next()?;
+				// 	if let Some(ident) = next.get_ident() {
+				// 		path.push(ident.to_string());
+				// 	}
+				// 	else {
+				// 		return Err(SyntaxError::MalformedPath(next.clone()).at(next.loc));
+				// 	}
+				// 	next = tokens.next()?;
+				// }
+				// Ok(Type::Path(path))
+			}
+			else {
+				tokens.loc = loc;
+				Ok(Type::Identifier(ident.to_owned()))
+			}
 		}
+	}
+	else if next.is_punct("[") {
+		todoat!(next.loc, "Parse type of arrays: `{:?}`", next);
 	}
 	else {
 		todoat!(next.loc, "Parse type from: `{:?}`", next);
@@ -488,6 +539,15 @@ fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> SynResult<(Ty
 	else if let Some("false") = next.get_ident() {
 		ty = Type::Primitive(Primitive::Bool);
 		rhs = Expr::Literal(Literal::Bool(false));
+	}
+	else if let Some(ident) = next.get_ident() {
+		let loc = tokens.loc;
+		let next = tokens.next()?;
+		expect_token_from(next, &[";", ")", "}"])
+			.unwrap_or_else(|_| panicat!(next.loc, "Parse more complicated expressions"));
+		tokens.loc = loc;
+		ty = Type::Infer;
+		rhs = Expr::Ident(ident.to_owned());
 	}
 	else {
 		dbg!(&tokens.tokens[tokens.loc..]);

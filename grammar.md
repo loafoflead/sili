@@ -48,6 +48,8 @@ main :: () -> i32 {
 		abort("Failed to read from console");
 	};
 
+	array : [4]Type<i32> = [0, 1, 2, 3];
+
 	example := Example.One;
 	switch example {
 		One => io.print("One"),
