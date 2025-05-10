@@ -94,6 +94,7 @@ impl Tokeniser {
             return None;
         };
         let string = text.to_string();
+        let lines = string.split('\n').collect::<Vec<&str>>();
         dbg!(&string);
         let chars = string.chars().collect::<Vec<char>>();
 
@@ -129,13 +130,18 @@ impl Tokeniser {
                     }
                     if self.keep_newlines { tokens.push(Token::new("\n", line, column_og, column)?); }
                     line += 1;
+                    // println!("-------------------");
+                    // println!("{}", lines[line-2]);
+                    // println!("length of line: {}", column);
+                    // println!("-------------------");
                     column = 0;
                 }
                 else if !buf.trim().is_empty() {
                     tokens.push(Token::new(buf.as_str().trim(), line, column_og, column)?);
                     column_og = column;
+                    buf.clear();
                 }
-                buf.clear();
+                column_og = column + 1;
             }
             else if c == self.string_enter {
                 in_string = true;
@@ -144,7 +150,11 @@ impl Tokeniser {
                 let mut puncts: Vec<&&str> = self.puncts.iter().filter(|p| p.starts_with(c)).collect();
                 puncts.sort_by(|a: &&&str, b: &&&str| a.len().cmp(&b.len()));
                 puncts.reverse();
+                let col = column;
+                let col_og = column_og;
                 for punct in puncts {
+                    column = col;
+                    column_og = col_og;
                     'punct_characters: for (i, pc) in punct.chars().enumerate() {
                         // the punct we're comparing against is longer than the end of the file
                         if chars.len() < idx + i {
@@ -157,11 +167,20 @@ impl Tokeniser {
                             break 'punct_characters;
                         }
 
-                        if i == punct.len() - 1 {
+                        let at_end_of_punct = i == punct.len() - 1;
+
+                        if at_end_of_punct {
+                            // if identifier before us
                             if !buf.trim().is_empty() {
                                 tokens.push(Token::new(buf.as_str().trim(), line, column_og, column)?);
+                                column_og += buf.len();
+                                column += buf.len();
                                 buf.clear();
-                                column_og = column - 1;
+                            }
+
+                            column += punct.len();
+                            if *punct == "+" {
+                                dbg!(column_og, column);
                             }
                             tokens.push(Token::ty(TokenType::Punct(punct.to_string()), line, column_og, column));
                             column_og = column;
@@ -280,9 +299,9 @@ impl Token {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Location {
-    line: usize,
-    column_start: usize,
-    column_end: usize,
+    pub line: usize,
+    pub column_start: usize,
+    pub column_end: usize,
 }
 
 impl Display for Location {
@@ -324,9 +343,9 @@ impl Display for TokenType {
             Self::IntLiteral(int) => write!(f, "{}_int", int),
             Self::FloatLiteral(float) => write!(f, "{}_float", float),
             Self::StringLiteral(st) => write!(f, "\"{}\"", st),
-            Self::Ident(ident) => write!(f, "{}", ident),
-            Self::Keyword(kw) => write!(f, "{}", kw),
-            Self::Punct(p) => write!(f, "{}", p),
+            Self::Ident(ident) => write!(f, "ident({})", ident),
+            Self::Keyword(kw) => write!(f, "keyword({})", kw),
+            Self::Punct(p) => write!(f, "punct({})", p),
             Self::Newline => write!(f, "\\n"),
             Self::Eof => write!(f, "[EOF]"),
         }

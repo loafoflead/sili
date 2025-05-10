@@ -37,7 +37,7 @@ main :: () -> i32 {
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
-    assert!(syn::parse_items(tokens).is_some());
+    assert!(syn::parse_items(snippet, tokens).is_some());
 }
 
 #[test] 
@@ -49,29 +49,36 @@ r#"
 foo :: (input: string, height: f32) {}
 
 main :: () -> string {
-    a: i32 = 5;
+    a: i32 : 5;
     foo("hello", 7.7);
+}
+
+Thing :: struct {
+    height: i32,
+    age: string,
+    thing: bool,
 }
 "#;
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
-    assert!(syn::parse_items(tokens).is_some());
+    assert!(syn::parse_items(snippet, tokens).is_some());
 }
 
 fn main() {
     let tokeniser = create_tokeniser();
+
     let snippet = 
 r#"
-main :: () -> i32 {
-    a :: 5;
+main :: () {
+    a : i32 : 5;
     b := 5;
 }
 "#;
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
-    let _items = syn::parse_items(tokens);
+    let _items = syn::parse_items(snippet, tokens);
 }
 
 /*

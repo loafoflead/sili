@@ -5,7 +5,7 @@ use std::ops::Index;
 use std::fmt::{self, Display};
 
 type Ident = String;
-type SynResult<T> = Result<T, SyntaxError>;
+type SynResult<T> = Result<T, SyntaxErrorLoc>;
 
 trait Optionalise {
 	fn to_option(self) -> Option<()>;
@@ -58,11 +58,41 @@ macro_rules! panicat {
 }
 
 #[derive(Debug)]
+struct SyntaxErrorLoc {
+	loc: Option<Location>,
+	err: SyntaxError,
+}
+
+impl Display for SyntaxErrorLoc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+    	if let Some(loc) = self.loc {
+    		write!(f, "{}: {}", loc, self.err)
+    	}
+    	else {
+    		write!(f, "[??]: {}", self.err)
+    	}
+    }
+}
+
+#[derive(Debug)]
 enum SyntaxError {
 	Expected { expect: Vec<String>, got: Token },
 	InvalidIdent(Token),
 	ReservedIdent(Token),
 	EndOfTokens,
+}
+
+impl SyntaxError {
+	fn at(self, loc: Location) -> SyntaxErrorLoc {
+		SyntaxErrorLoc { loc: Some(loc), err: self }
+	}
+
+	fn at_token_or_default(self, tok: Option<&Token>) -> SyntaxErrorLoc {
+		let loc = if let Some(tok) = tok {
+			Some(tok.loc)
+		} else { None };
+		SyntaxErrorLoc { loc, err: self }
+	}
 }
 
 impl Display for SyntaxError {
@@ -72,13 +102,12 @@ impl Display for SyntaxError {
         		let len = expect.len();
         		write!(
         			f, 
-        			"{loc}: Expected {one_of}{expect}, not {got}.",
-        			loc = got.loc,
+        			"Expected {one_of}{expect}, not {got}.",
         			one_of = if expect.len() > 1 { "one of " } else { "" },
         			expect = expect.iter().enumerate()
         				.fold(String::new(), |mut acc, (i, exp)| {
-        					acc.push_str(&format!("{}", exp));
-        					if i != expect.len() {
+        					acc.push_str(exp);
+        					if i != expect.len()-1 {
         						acc.push_str(", ");
         					}
         					acc
@@ -110,7 +139,7 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 	fn next(&'outer mut self) -> SynResult<&'inner Token> {
 		let r = self.tokens.get(self.loc);
 		self.loc += 1;
-		r.ok_or(SyntaxError::EndOfTokens)
+		r.ok_or(SyntaxError::EndOfTokens.at_token_or_default(r))
 	}
 
 	fn expect(&self, s: &str) -> bool {
@@ -129,9 +158,14 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 	fn next_expect_from(&'outer mut self, strs: &[&str]) -> SynResult<()> {
 		let next = self.next()?;
 		for s in strs {
-			expect_token(next, s)?;
+			if let Ok(_) = expect_token(next, s) {
+				return Ok(())
+			}
 		}
-		Ok(())
+		Err(SyntaxError::Expected {
+			expect: strs.iter().map(|s| s.to_string()).collect(),
+			got: next.clone(),
+		}.at(next.loc))
 	}
 }
 
@@ -142,8 +176,21 @@ fn expect_token(token: &Token, s: &str) -> SynResult<()> {
 	|| tokcond).to_option().ok_or(SyntaxError::Expected {
 		expect: vec![s.to_owned()],
 		got: token.clone(),
-	})
+	}.at(token.loc))
 }
+
+fn expect_token_from(token: &Token, strs: &[&str]) -> SynResult<()> {
+	for s in strs {
+		if let Ok(_) = expect_token(token, s) {
+			return Ok(())
+		}
+	}
+	Err(SyntaxError::Expected {
+		expect: strs.iter().map(|s| s.to_string()).collect(),
+		got: token.clone(),
+	}.at(token.loc))
+}
+
 
 impl<'a> Index<usize> for TokenSlice<'a> {
     type Output = Token;
@@ -163,9 +210,13 @@ enum Expr {
 enum Statement {
 	Assign(Assign),
 	// untyped assignment (functions, structs, enums)
-	Declare {
+	TypeDeclaration {
 		ident: Ident,
-		object: Object,
+		ty: Object,
+	},
+	FunctionDeclaration {
+		ident: Ident,
+		function: Function,
 	},
 	FuncCall(FuncCall),
 	Return(Type, Expr),
@@ -200,7 +251,6 @@ impl Field {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Object {
-	Function(Function),
 	Tuple(Vec<Type>),
 	Struct(Struct),
 }
@@ -298,7 +348,7 @@ fn parse_ident(next: &Token, tokens: &TokenSlice) -> SynResult<Ident> {
 			return r;
 		}
 	}
-	Err(SyntaxError::InvalidIdent(next.clone()))
+	Err(SyntaxError::InvalidIdent(next.clone()).at(next.loc))
 }
 
 fn parse_func_call_args(tokens: &mut TokenSlice) -> SynResult<FuncCallParams> {
@@ -339,7 +389,7 @@ fn parse_struct_fields(tokens: &mut TokenSlice) -> SynResult<Struct> {
 		let og = tokens.loc;
 		let next = tokens.next()?;
 		if let Ok(ident) = parse_ident(&next, tokens) {
-			if is_reserved(&ident) { return Err(SyntaxError::ReservedIdent(next.clone())) };
+			if is_reserved(&ident) { return Err(SyntaxError::ReservedIdent(next.clone()).at(next.loc)) };
 
 			tokens.next_expect(":")?;
 
@@ -357,7 +407,8 @@ fn parse_struct_fields(tokens: &mut TokenSlice) -> SynResult<Struct> {
 			break Struct { fields };
 		}
 		else {
-			panicat!(next.loc, "Expected an identifier when defining fields, not {:?}", next);
+			return Err(SyntaxError::Expected { expect: vec!["identifier".to_string()], got: next.clone() }.at(next.loc));
+			// panicat!(next.loc, "Expected an identifier when defining fields, not {:?}", next);
 		}
 	};
 
@@ -432,7 +483,8 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 	else {
 		tokens.loc -= 1;
 		let r = parse_type(tokens)?;
-		tokens.next_expect_from(&["=", ":"])?;
+		next = tokens.next()?;
+		expect_token_from(next, &["=", ":"])?;
 		assign_kind = if next.is_punct(":") { punct_loc = next.loc; Some(Assignment::Comptime) }
 		else if next.is_punct("=") { punct_loc = next.loc; Some(Assignment::Mutable) }
 		else { panicat!(next.loc, "Could not glean mutability of decl") };
@@ -478,13 +530,13 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 					None => panicat!(next.loc, "Function syntax: `ident :: (arg1: ty, ..) -> .. {{}}`"),
 				};
 
-				let ret = Statement::Declare {
+				let ret = Statement::FunctionDeclaration {
 					ident: ident.to_owned(),
-					object: Object::Function(Function {
+					function: Function {
 						ret: return_type,
 						args,
-						body: parse_block(tokens).expect("Block parse failed")
-					})
+						body: parse_block(tokens)?
+					}
 				};
 
 				assert_assign(Assignment::Comptime);
@@ -501,7 +553,18 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 		}
 
 		match next.get_keyword() {
-			Some("struct") => todoat!(next.loc, "parse struct"),
+			Some("struct") => {
+				tokens.next_expect("{")?;
+				let struc = parse_struct_fields(tokens)?;
+				tokens.next_expect("}")?;
+
+				assert_assign(Assignment::Comptime);
+
+				return Ok(Statement::TypeDeclaration {
+					ident: ident.to_owned(),
+					ty: Object::Struct(struc)
+				});
+			}
 			Some("enum") => todoat!(next.loc, "parse enum"),
 			Some("import") => todoat!(next.loc, "parse import assignment"),
 			Some(other) => panicat!(next.loc, "Keyword `{}` cannot be used when assigning an object.", other),
@@ -555,12 +618,7 @@ fn parse_block(tokens: &mut TokenSlice) -> SynResult<Block> {
 
 		tokens.loc = og;
 		let loc = next.loc;
-		if let Ok(stmt) = parse_stmt(tokens) {
-			stmts.push(stmt);
-		}
-		else {
-			panicat!(loc, "Failed to parse statement");
-		}
+		stmts.push(parse_stmt(tokens)?);
 	}
 	Ok(Block(stmts))
 }
@@ -614,14 +672,28 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<Statement> {
 	}
 }
 
-pub fn parse_items(mut tokens: Vec<Token>) -> Option<()> {
+pub fn parse_items(snippet: &str, mut tokens: Vec<Token>) -> Option<()> {
 	let mut stmts: Vec<Statement> = Vec::new();
 	let mut tokens = TokenSlice {
 		tokens: tokens.as_slice(),
 		loc: 0,
 	};
+
+	let lines = snippet.split('\n').collect::<Vec<&str>>();
+
 	while !tokens.tokens[tokens.loc].is_eof() {
-		stmts.push(parse_stmt(&mut tokens).unwrap());
+		let stmt = parse_stmt(&mut tokens);
+		if let Err(e) = stmt {
+			if let Some(loc) = e.loc {
+				println!("{}", lines[loc.line-1]);
+				println!("{}{}", " ".repeat(loc.column_start-1), "^".repeat(loc.column_end - loc.column_start));
+			}
+			println!("{}", e);
+			return None;
+		}
+		else {
+			stmts.push(stmt.unwrap());
+		}
 	}
 
 	dbg!(stmts);
