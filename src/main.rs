@@ -72,12 +72,19 @@ fn main() {
 
     let snippet = 
 r#"
-main :: () -> i32 {
-    a : i32 : 5;
-    b := 5;
-    return a;
-}
+foo :: () {}
+
+bar :: () {}
+
+main :: () {}
 "#;
+// r#"
+// main :: () -> i32 {
+//     a : i32 : 5;
+//     b := 5;
+//     return a;
+// }
+// "#;
 
     let tokens = tokeniser.tokenise(snippet).unwrap();
 
@@ -85,7 +92,7 @@ main :: () -> i32 {
 
     dbg!(&items);
 
-    let _correct = type_check::check(items).unwrap();
+    let _correct = type_check::type_check(items).unwrap();
 }
 
 /*
