@@ -291,15 +291,27 @@ impl Field {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Object {
-	Tuple(Vec<Type>),
+	TupleStruct(Struct),
 	Struct(Struct),
+	Enum(Enum),
+	// TODO: union (tagged) (is a vec of structs)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FuncSignature {
+	pub ret: Type,
+	pub args: Struct,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-	pub ret: Type,
-	pub args: Struct,
+	pub signature: FuncSignature,
 	pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Enum {
+	pub variants: Vec<Ident>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,6 +390,17 @@ pub enum Literal {
 	Float(f32),
 	String(String),
 	Bool(bool),
+}
+
+impl Literal {
+	pub fn ty(&self) -> Type {
+		Type::Primitive(match self {
+			Self::Int(_) => Primitive::Int,
+			Self::Float(_) => Primitive::Float,
+			Self::Bool(_) => Primitive::Bool,
+			Self::String(_) => Primitive::String,
+		})
+	}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -630,8 +653,10 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 				let ret = Statement::FunctionDeclaration {
 					ident: ident.to_owned(),
 					function: Function {
-						ret: return_type,
-						args,
+						signature: FuncSignature {
+							ret: return_type,
+							args,
+						},
 						body: parse_block(tokens)?
 					}
 				}.between(first_loc, tokens.current_loc()?);

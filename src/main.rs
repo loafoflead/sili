@@ -72,11 +72,14 @@ fn main() {
 
     let snippet = 
 r#"
-foo :: () {}
+Foo :: struct {
+    height: Foo,
+    age: i32,
+}
 
-bar :: () {}
-
-main :: () {}
+main :: (bar: Foo) -> i32 {
+    return a;
+}
 "#;
 // r#"
 // main :: () -> i32 {

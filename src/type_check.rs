@@ -19,72 +19,260 @@ impl ScopedIdent {
 
 #[derive(Debug)]
 struct TypeState {
-	types: HashMap<ScopedIdent, Type>,
+	types: Vec<HashMap<Ident, Type>>,
 	// TODO: make functions not 'own' their code, 
 	// and just be a singature
 	// or create a new type enum here, it just 
 	// feels weird having the WHOLE block of code in 
 	// the type
-	functions: HashMap<ScopedIdent, Function>,
+	functions: Vec<HashMap<Ident, FuncSignature>>,
+	// TODO: implementation:
+	// find a thing, if you can't get its type from the expressions (i.e. they're not in the database)
+	// add the ident to a map of needed types, then continue parsing, so that once
+	// the needed type is encountered it can be used to solve that missing ident 
+	// or when missing an ident, solve for that one asap, which would be slow but maybe not even slower
+	constants: Vec<HashMap<Ident, Type>>,
 	scope: usize,
+}
+
+impl TypeState {
+	// get types from the given scope or above
+	fn get_type_above(&self, ident: &str, scope: usize) -> Option<&Type> {
+		for sc in 0..scope+1 {
+			if let Some(t) = self.types.get(sc).expect("Uninitialised scope").get(ident) {
+				return Some(t);
+			}
+		}
+		None
+	}
+	fn get_typeof_const_above(&self, ident: &str, scope: usize) -> Option<&Type> {
+		for sc in 0..scope+1 {
+			if let Some(t) = self.constants.get(sc).expect("Uninitialised scope").get(ident) {
+				return Some(t);
+			}
+		}
+		None
+	}
+
+	fn push_scope(&mut self) {
+		self.types.push(HashMap::new());
+		self.functions.push(HashMap::new());
+		self.constants.push(HashMap::new());
+	}
 }
 
 pub fn type_check(stmts: Vec<StatementLoc>) -> Option<()> {
 	let mut state = TypeState {
-		types: HashMap::new(),
-		functions: HashMap::new(),
+		types: Vec::new(),
+		functions: Vec::new(),
+		constants: Vec::new(),
 		scope: 0,
 	};
-	check(&mut state, stmts.as_slice())
+	// first round, parse functions and type declarations
+	check_typedecls(&mut state, stmts.as_slice());
+	dbg!(&state);
+	verify_explicit_typing(&mut state, stmts.as_slice());
+	dbg!(&state);
+	None
 }
 
-pub fn check(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
-	dbg!(&state);
+fn check_typedecls(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
 	let cur_scope = state.scope;
-	for StatementLoc { stmt, from, to } in stmts {
+	state.push_scope();
+	
+	for StatementLoc { stmt, from, to } in stmts.iter() {
 		match stmt {
-			Statement::Assignment(Assign { ../*lhs, ty, rhs, kind*/ }) => todoat!(from => to, "implement assignment typecheck"),
-			Statement::TypeDeclaration {../* ident, ty */} => todoat!(from => to, "implement typedecl typecheck"),
+			Statement::TypeDeclaration { ident, ty } => {
+				state.types[cur_scope].insert(ident.clone(), Type::Object(Box::new(ty.clone())));
+			}
 			Statement::FunctionDeclaration { ident, function } => {
-				let Function { ret, args, body } = &function;
-				let gleaned_return_ty = if let Some(StatementLoc { stmt, .. }) = body.0.last() {
-					match stmt {
-						Statement::Return(ty, ..) => ty,
-						// if no return stmt, assume void
-						_ => {
-							if *ret == Type::Void {
-								&Type::Void
-							}
-							else {
-								panicat!(from, "Function {} is missing return statement.", ident);
-							}
+				let Function { signature, body } = &function;
+				let FuncSignature { ret, args } = &signature;
+				let gleaned_return_ty = match parse_return_type(state, body.0.as_slice(), cur_scope) {
+					Some(ty) => ty,
+					None => {
+						if *ret == Type::Void {
+							Type::Void
 						}
-					}
-				} else {
-					// if func has no stmts in body, assume return is void
-					if *ret == Type::Void {
-						&Type::Void
-					}
-					else {
-						panicat!(from, "Function {} is missing return statement.", ident);
+						else {
+							// TODO: make this multiple steps, this just won't work 
+							// if the code assumes all the data *may* exist, 
+							// we need to do multiple passes: global -> scope local -> etc...
+							panicat!(from, "Function `{}` is missing return statement, even though signature indicates a return type of {}.", ident, ret);
+						}
 					}
 				};
 
-				if *gleaned_return_ty != Type::Infer && *gleaned_return_ty != *ret {
+				if gleaned_return_ty != Type::Infer && gleaned_return_ty != *ret {
 					panicat!(from, "Type mismatch in type returned from function, got {}, expected {}.", gleaned_return_ty, ret);
 				}
 
-				state.functions.insert(ScopedIdent::new_in(ident.to_owned(), cur_scope), function.clone());
+				state.functions[cur_scope].insert(ident.to_owned(), signature.clone());
 
 				// FIXME: this is slightly odd?
 				state.scope += 1;
-				check(state, body.0.as_slice())?;
+				check_typedecls(state, body.0.as_slice())?;
 				state.scope -= 1;
 			}
-			Statement::FuncCall(_) => todoat!(from => to, "implement funccall typecheck"),
-			Statement::Return(_ty, _expr) => todoat!(from => to, "implement return typecheck"),
+			Statement::FuncCall(_) | Statement::Assignment {..} | Statement::Return(..) => (),
 		}
 	}
 
 	Some(())
+}
+
+// expects all structs and functions to be superficially typed
+fn verify_explicit_typing(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
+	let cur_scope = state.scope;
+	
+	for StatementLoc { stmt, from, to } in stmts.iter() {
+		match stmt {
+			Statement::TypeDeclaration { ident, ty } => {
+				match ty {
+					Object::TupleStruct(struc) | Object::Struct(struc) => {
+						check_struct_fields(state, &struc, cur_scope)?;
+					}
+					Object::Enum(en) => todo!("??? should simple enums need variant type checks?"),
+				}
+			}
+			Statement::FunctionDeclaration { ident, function } => {
+				let Function { signature, body } = &function;
+				let FuncSignature { ret, args } = &signature;
+
+				check_struct_fields(state, args, cur_scope)?;
+
+				// FIXME: this is slightly odd?
+				state.scope += 1;
+				verify_explicit_typing(state, body.0.as_slice())?;
+				state.scope -= 1;
+			}
+			Statement::Assignment( Assign { lhs, ty, rhs, kind } ) => {
+				// TODO: name type paths based on their scope, bc this is shit
+				if let Type::Identifier(ident) = ty {
+					if let None = state.get_type_above(&ident, cur_scope) {
+						panicat!(from, "Unknown or inaccessible type in assignment: {}", ident);
+						// return None (or an error ig)
+					}
+				}
+				else if let Type::Path(path) = ty {
+					todo!("parse path type in assignment typechecking");
+				}
+			}
+			Statement::FuncCall(_) | Statement::Return(..) => (),
+		}
+	}
+
+	Some(())
+}
+
+fn check_struct_fields(state: &mut TypeState, st: &Struct, cur_scope: usize) -> Option<()> {
+	for field in &st.fields {
+		if let Type::Identifier(ident) = &field.ty {
+			if let None = state.get_type_above(&ident, cur_scope) {
+				panic!("Unknown type in struct field: {}", ident);
+				// return None (or an error ig)
+			}
+		}
+		else if let Type::Path(path) = &field.ty {
+			todo!("parse path type in struct typechecking");
+		}
+	}
+	Some(())
+}
+
+fn check_assignments(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
+	let cur_scope = state.scope;
+	state.push_scope();
+	
+	for StatementLoc { stmt, from, to } in stmts.iter() {
+		match stmt {	
+			Statement::Assignment(Assign { lhs, ty, rhs, kind }) => {
+				if let Some(expr_ty) = typecheck_expr(state, rhs, Some(ty), cur_scope) {
+					let push_const = match lhs {
+						Pattern::Ident(ident) => {
+							|state: &mut TypeState, scope: usize, ty: Type| {
+								state.constants[scope].insert(ident.to_owned(), ty);
+							}
+						}
+					};
+
+					match kind {
+						Assignment::Mutable => todo!("add mutable assignements to typestate"),
+						Assignment::Comptime => {
+							push_const(state, cur_scope, expr_ty);
+						}
+					}
+				}
+				else {
+					todoat!(from => to, "implement assignment typecheck")
+				}
+			}
+			_ => (),
+		}
+	}
+	Some(())
+}
+
+// none if no type could be found
+fn typecheck_expr<'a>(state: &TypeState, expr: &Expr, ty: Option<&Type>, scope: usize) -> Option<Type> {
+	let inferred_type = || {
+		match expr {
+			Expr::Block(Block(stmts)) => todo!("find return type of block"),
+			Expr::Ident(ident) => {
+				if let Some(ty) = state.get_typeof_const_above(ident.as_str(), scope) {
+					return Some(ty.clone());
+				}
+				else if false {
+					todo!("get mut stuff");
+				}
+				else {
+					return None;
+				}
+			}
+			Expr::Literal(literal) => {
+				return Some(literal.ty());
+			}
+			Expr::FuncCall(FuncCall { ident, passed }) => {
+				todo!("type check function call");				
+			}
+		}
+	};
+	match ty {
+		None | Some(Type::Infer) => {
+			return inferred_type();
+		}
+		Some(Type::Identifier(ident)) => todo!("Parse type from identifier"),
+		Some(Type::Path(path)) => todo!("Parse type from path"),
+		Some(other) => {
+			let inferred = inferred_type();
+			match inferred {
+				Some(t) => if t == *other {
+					return Some(other.clone())
+				} else {
+					todo!("handle automatic conversion between {:?} and {:?}", t, other);
+				},
+				None => return Some(other.clone()),
+			}
+		}
+	}
+}
+
+fn parse_return_type<'a>(state: &TypeState, body: &'a [StatementLoc], scope: usize) -> Option<Type> {
+	let Some(StatementLoc { from, to, stmt: Statement::Return(ty, expr) }) = body.last() else { return None };
+
+	match ty {
+		Type::Infer => {
+			return typecheck_expr(state, expr, Some(ty), scope).or(Some(Type::Infer));
+		}
+		Type::Identifier(ident) => {
+			if let Some(ty) = state.get_type_above(ident, scope) {
+				todoat!(from => to, "(possibly used for constructor expr) Handle returning of a known type");
+			}
+		}
+		Type::Path(ident) => {
+			unreachable!("Type checking return statement should never be given a path");
+		}
+		known => return Some(known.clone()),
+	}
+	unreachable!("hi");
 }
