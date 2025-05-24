@@ -1,21 +1,7 @@
 use crate::{todoat, panicat};
 use super::syn::*;
 use std::collections::HashMap;
-
-#[derive(Hash, Eq, PartialEq, Debug)]
-struct ScopedIdent {
-	ident: Ident,
-	// 0 is global scope
-	scope: usize,
-}
-
-impl ScopedIdent {
-	fn new_in(ident: Ident, scope: usize) -> Self {
-		Self {
-			ident, scope
-		}
-	}
-}
+use std::sync::Arc;
 
 #[derive(Debug)]
 struct TypeState {
@@ -31,7 +17,7 @@ struct TypeState {
 	// add the ident to a map of needed types, then continue parsing, so that once
 	// the needed type is encountered it can be used to solve that missing ident 
 	// or when missing an ident, solve for that one asap, which would be slow but maybe not even slower
-	constants: Vec<HashMap<Ident, Type>>,
+	variables: Vec<HashMap<Ident, Type>>,
 	scope: usize,
 }
 
@@ -45,9 +31,9 @@ impl TypeState {
 		}
 		None
 	}
-	fn get_typeof_const_above(&self, ident: &str, scope: usize) -> Option<&Type> {
+	fn get_typeof_var_above(&self, ident: &str, scope: usize) -> Option<&Type> {
 		for sc in 0..scope+1 {
-			if let Some(t) = self.constants.get(sc).expect("Uninitialised scope").get(ident) {
+			if let Some(t) = self.variables.get(sc).expect("Uninitialised scope").get(ident) {
 				return Some(t);
 			}
 		}
@@ -57,7 +43,7 @@ impl TypeState {
 	fn push_scope(&mut self) {
 		self.types.push(HashMap::new());
 		self.functions.push(HashMap::new());
-		self.constants.push(HashMap::new());
+		self.variables.push(HashMap::new());
 	}
 }
 
@@ -65,13 +51,13 @@ pub fn type_check(stmts: Vec<StatementLoc>) -> Option<()> {
 	let mut state = TypeState {
 		types: Vec::new(),
 		functions: Vec::new(),
-		constants: Vec::new(),
+		variables: Vec::new(),
 		scope: 0,
 	};
 	// first round, parse functions and type declarations
 	check_typedecls(&mut state, stmts.as_slice());
-	dbg!(&state);
 	verify_explicit_typing(&mut state, stmts.as_slice());
+	typecheck_expressions(&mut state, stmts.as_slice());
 	dbg!(&state);
 	None
 }
@@ -83,7 +69,7 @@ fn check_typedecls(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> 
 	for StatementLoc { stmt, from, to } in stmts.iter() {
 		match stmt {
 			Statement::TypeDeclaration { ident, ty } => {
-				state.types[cur_scope].insert(ident.clone(), Type::Object(Box::new(ty.clone())));
+				state.types[cur_scope].insert(ident.clone(), Type::Object(Arc::new(ty.clone())));
 			}
 			Statement::FunctionDeclaration { ident, function } => {
 				let Function { signature, body } = &function;
@@ -121,6 +107,14 @@ fn check_typedecls(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> 
 	Some(())
 }
 
+fn push_var_to_scope(state: &mut TypeState, scope: usize, pat: &Pattern, ty: Type) {
+	match pat {
+		Pattern::Ident(ident) => {
+			state.variables[scope].insert(ident.to_owned(), ty);	
+		}
+	}
+}
+
 // expects all structs and functions to be superficially typed
 fn verify_explicit_typing(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
 	let cur_scope = state.scope;
@@ -147,18 +141,54 @@ fn verify_explicit_typing(state: &mut TypeState, stmts: &[StatementLoc]) -> Opti
 				state.scope -= 1;
 			}
 			Statement::Assignment( Assign { lhs, ty, rhs, kind } ) => {
-				// TODO: name type paths based on their scope, bc this is shit
-				if let Type::Identifier(ident) = ty {
-					if let None = state.get_type_above(&ident, cur_scope) {
-						panicat!(from, "Unknown or inaccessible type in assignment: {}", ident);
-						// return None (or an error ig)
+				match ty {
+					Type::Identifier(ident) => {
+						if let None = state.get_type_above(&ident, cur_scope) {
+							panicat!(from, "Unknown or inaccessible type in assignment: {}", ident);
+							// return None (or an error ig)
+						}
+						push_var_to_scope(state, cur_scope, lhs, ty.clone());
 					}
-				}
-				else if let Type::Path(path) = ty {
-					todo!("parse path type in assignment typechecking");
+					Type::Path(_path) => {
+						todo!("parse path type in assignment typechecking");
+					}
+					Type::Infer => (),
+					Type::Object(_) | Type::Primitive(_) | Type::Void => {
+						push_var_to_scope(state, cur_scope, lhs, ty.clone());
+					}
 				}
 			}
 			Statement::FuncCall(_) | Statement::Return(..) => (),
+		}
+	}
+
+	Some(())
+}
+
+fn typecheck_expressions(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
+	let cur_scope = state.scope;
+	for StatementLoc { stmt, from, to } in stmts.iter() {
+		match stmt {
+			Statement::Assignment( Assign { lhs, ty, rhs, kind } ) => {
+				if let Some(final_ty) = typecheck_expr(state, rhs, Some(ty), cur_scope) {
+					push_var_to_scope(state, cur_scope, lhs, final_ty);
+				}
+				else {
+					panicat!(from, "Could not infer type of expression: {:?}", stmt);
+				}
+			}
+			Statement::FuncCall(_) | Statement::Return(..) => (),
+			Statement::TypeDeclaration {..} => {}
+			Statement::FunctionDeclaration { ident, function } => {
+				let Function { signature: _, body } = &function;
+				// let FuncSignature { ret, args } = &signature;
+
+				// FIXME: this is slightly odd?
+				state.scope += 1;
+				// TODO: make all of these funcs expect a return type (maybe optional)
+				typecheck_expressions(state, body.0.as_slice())?;
+				state.scope -= 1;
+			}
 		}
 	}
 
@@ -180,80 +210,58 @@ fn check_struct_fields(state: &mut TypeState, st: &Struct, cur_scope: usize) -> 
 	Some(())
 }
 
-fn check_assignments(state: &mut TypeState, stmts: &[StatementLoc]) -> Option<()> {
-	let cur_scope = state.scope;
-	state.push_scope();
-	
-	for StatementLoc { stmt, from, to } in stmts.iter() {
-		match stmt {	
-			Statement::Assignment(Assign { lhs, ty, rhs, kind }) => {
-				if let Some(expr_ty) = typecheck_expr(state, rhs, Some(ty), cur_scope) {
-					let push_const = match lhs {
-						Pattern::Ident(ident) => {
-							|state: &mut TypeState, scope: usize, ty: Type| {
-								state.constants[scope].insert(ident.to_owned(), ty);
-							}
-						}
-					};
-
-					match kind {
-						Assignment::Mutable => todo!("add mutable assignements to typestate"),
-						Assignment::Comptime => {
-							push_const(state, cur_scope, expr_ty);
-						}
-					}
-				}
-				else {
-					todoat!(from => to, "implement assignment typecheck")
-				}
+fn typeof_expr(state: &TypeState, expr: &Expr, scope: usize) -> Option<Type> {
+	match expr {
+		Expr::Block(Block(stmts)) => todo!("find return type of block"),
+		Expr::Ident(ident) => {
+			if let Some(ty) = state.get_typeof_var_above(ident.as_str(), scope) {
+				return Some(ty.clone());
 			}
-			_ => (),
+			else {
+				return None;
+			}
+		}
+		Expr::Literal(literal) => {
+			return Some(literal.ty());
+		}
+		Expr::FuncCall(FuncCall { ident, .. }) => {
+			Some(state.functions[scope].get(ident).unwrap().ret.clone())
 		}
 	}
-	Some(())
 }
 
 // none if no type could be found
 fn typecheck_expr<'a>(state: &TypeState, expr: &Expr, ty: Option<&Type>, scope: usize) -> Option<Type> {
-	let inferred_type = || {
-		match expr {
-			Expr::Block(Block(stmts)) => todo!("find return type of block"),
-			Expr::Ident(ident) => {
-				if let Some(ty) = state.get_typeof_const_above(ident.as_str(), scope) {
-					return Some(ty.clone());
-				}
-				else if false {
-					todo!("get mut stuff");
-				}
-				else {
-					return None;
+	let inferred_type = 
+		typeof_expr(state, expr, scope);
+	match (&ty, &inferred_type) {
+		(Some(Type::Identifier(given)), Some(Type::Object(obj))) => {
+			if let Type::Object(obj_ident) = state.get_type_above(given, scope).unwrap() {
+				if obj_ident == obj {
+					return inferred_type;
 				}
 			}
-			Expr::Literal(literal) => {
-				return Some(literal.ty());
-			}
-			Expr::FuncCall(FuncCall { ident, passed }) => {
-				todo!("type check function call");				
-			}
+			panic!("Whoops, provided a type that was not the inferred object. Provided: {}, expected: {:?}", given, obj);
 		}
-	};
-	match ty {
-		None | Some(Type::Infer) => {
-			return inferred_type();
+		(None, None) => {
+			return None;
 		}
-		Some(Type::Identifier(ident)) => todo!("Parse type from identifier"),
-		Some(Type::Path(path)) => todo!("Parse type from path"),
-		Some(other) => {
-			let inferred = inferred_type();
-			match inferred {
-				Some(t) => if t == *other {
-					return Some(other.clone())
-				} else {
-					todo!("handle automatic conversion between {:?} and {:?}", t, other);
-				},
-				None => return Some(other.clone()),
+		// couldn't infer, but got one
+		(Some(given), None) => {
+			return None;
+		}
+		(Some(Type::Infer), Some(inferred)) => {
+			return inferred_type;
+		}
+		(Some(given), Some(inferred)) => {
+			if *given == inferred {
+				return inferred_type;
+			}
+			else {
+				panic!("Given type `{given}` does not match type of expression in value place: `{}`", inferred);
 			}
 		}
+		(_, _) => todo!("uhuhghgu"),
 	}
 }
 

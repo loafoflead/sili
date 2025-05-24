@@ -3,6 +3,7 @@ use crate::tokeniser::*;
 use crate::KWORDS;
 use std::ops::Index;
 use std::fmt::{self, Display};
+use std::sync::Arc;
 
 pub type Ident = String;
 type SynResult<T> = Result<T, SyntaxErrorLoc>;
@@ -339,12 +340,12 @@ pub enum Pattern {
 pub enum Type {
 	Primitive(Primitive),
 	// TODO:
-	Object(Box<Object>),
+	Object(Arc<Object>),
 	Void,
 	// Infer used when we have an expression
 	// but we can't yet figure out it's type
 	// like 'return a', or
-	// 'a :: Type<i32>;'
+	// 'a :: Struct.new();'
 	Infer,
 	Identifier(Ident),
 	Path(Vec<Ident>),
@@ -356,7 +357,7 @@ impl Display for Type {
         	Type::Primitive(p) => write!(f, "primitive({p:?})"),
         	Type::Object(obj) => todo!("format obj"),
         	Type::Void => write!(f, "[void]"),
-        	Type::Infer => write!(f, "[inferred]"),
+        	Type::Infer => write!(f, "[TO BE DETERMINED]"),
         	Type::Identifier(ident) => write!(f, "ident({ident})"),
         	Type::Path(path) => write!(f, "path({})", path.join("::")),
         }

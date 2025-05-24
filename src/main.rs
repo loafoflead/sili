@@ -78,6 +78,8 @@ Foo :: struct {
 }
 
 main :: (bar: Foo) -> i32 {
+    which :: 1;
+    a :: which;
     return a;
 }
 "#;
