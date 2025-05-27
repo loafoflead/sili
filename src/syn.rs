@@ -2,6 +2,7 @@
 use crate::tokeniser::*;
 use crate::KWORDS;
 use std::ops::Index;
+use std::cmp::{Ord, Ordering};
 use std::fmt::{self, Display};
 use std::sync::Arc;
 
@@ -186,6 +187,30 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 		}.at(next.loc))
 	}
 
+	fn get_after_close_paren(&self, s: &str) -> SynResult<&Token> {
+		let open_paren = match s {
+			")" => "(",
+			"]" => "[",
+			"}" => "{",
+			">" => "<",
+			_ => unreachable!("Paren {} doesn't have a defined opener.", s),
+		};
+		let mut i = self.loc;
+		while i < self.tokens.len() {			
+			let mut tok = self.tokens.get(i).ok_or(SyntaxError::EndOfTokens.somewhere())?;
+			// skip more parens
+			if tok.is_punct(open_paren) {
+				while i < self.tokens.len() && !tok.is_punct(s) { 
+					tok = self.tokens.get(i).ok_or(SyntaxError::EndOfTokens.somewhere())?;
+					i += 1;
+				}
+			}
+			if expect_token(tok, s).is_ok() { return self.tokens.get(i+1).ok_or(SyntaxError::EndOfTokens.somewhere()); }
+			i += 1;
+		}
+		Err(SyntaxError::Expected { expect: vec![s.to_owned()], got: Token::ty(TokenType::Eof, 0, 0, 0)}.at(self.current_loc()?))
+	}
+
 	fn current_loc(&self) -> SynResult<Location> {
 		let token = self.tokens.get(0).ok_or(SyntaxError::EndOfTokens.somewhere())?;
 		Ok(token.loc)
@@ -235,6 +260,56 @@ pub enum Expr {
 	Ident(Ident),
 	Literal(Literal),
 	FuncCall(FuncCall),
+	Binop(Binop),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Binop {
+	op: BinaryOperator,
+	lhs: Arc<Expr>,
+	rhs: Arc<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
+pub enum BinaryOperator {
+	Add, Sub,
+	Mul, Div,
+	Eq, Lt, Gt, LtEq, GtEq,
+}
+
+impl BinaryOperator {
+	fn from_str(s: &str) -> Option<Self> {
+		Some(match s {
+			"+" =>  Self::Add,
+			"-" =>  Self::Sub,
+			"*" =>  Self::Mul,
+			"/" =>  Self::Div,
+			"==" => Self::Eq,
+			"<=" =>  Self::LtEq,
+			">=" =>  Self::GtEq,
+			"<" =>  Self::Lt,
+			">" =>  Self::Gt,
+			_ => return None,
+		})
+	}
+
+	fn precedence(&self) -> usize {
+		match self {
+			Self::Add | Self::Sub => 1,
+			Self::Mul | Self::Div => 2,
+			Self::Eq | Self::Lt | Self::Gt | Self::LtEq | Self::GtEq => 3,
+		}
+	}
+
+	const fn list() -> &'static [&'static str] {
+		&["+", "-", "*", "/", "==", "<=", ">=", "<", ">"]
+	}
+}
+
+impl Ord for BinaryOperator {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.precedence().cmp(&other.precedence())
+	}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -447,15 +522,17 @@ fn parse_func_call_args(tokens: &mut TokenSlice) -> SynResult<FuncCallParams> {
 
 		let next: &Token = tokens.next()?;
 		let loc = next.loc;
+		tokens.loc -= 1;
 
 		if next.is_punct(")") || next.is_punct("}") {
 			tokens.loc = og;
 			break FuncCallParams::Unnamed(exprs);
 		}
 		else if next.is_punct(",") {
+			tokens.loc += 1;
 			continue;
 		}
-		else if let Ok((_ty, value)) = parse_expr(Some(next), tokens) {
+		else if let Ok((_ty, value)) = parse_expr(tokens) {
 			exprs.push(value)
 		}
 		else {
@@ -541,9 +618,84 @@ fn parse_type(tokens: &mut TokenSlice) -> SynResult<Type> {
 	}
 }
 
-fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
+fn parse_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
+	let lhs = parse_primary_expr(tokens)?;
+	let save = tokens.loc;
+	let next = tokens.next()?;
+	if let Some(punct) = next.get_punct() {
+		match punct {
+			";" | ")" | "}" => {
+				tokens.loc = save;
+				return Ok(lhs);
+			}
+			_ => ()
+		}
+		if let Some(first_binop) = BinaryOperator::from_str(punct) {
+			let pre_expr = tokens.loc;
+			let maybe_rhs = parse_primary_expr(tokens)?;
+			let post_expr = tokens.loc;
+			{
+				let next = tokens.next()?;
+				if let Some(punct) = next.get_punct() {
+					if let Some(second_binop) = BinaryOperator::from_str(punct) {
+						// second has higher precedence
+						// e.g: 1 + 2 * 3 --> 1 + (2 * 3)
+						if first_binop < second_binop {
+							tokens.loc = pre_expr;
+							return Ok((
+								Type::Infer, 
+								Expr::Binop(
+									Binop {op: first_binop, lhs: Arc::new(lhs.1), rhs: Arc::new(parse_expr(tokens)?.1) }
+								)
+							));
+						}
+						// second has lower precedence
+						// e.g: 1 * 2 + 3 --> (1 * 2) + 3
+						else {
+							return Ok((
+								Type::Infer, 
+								Expr::Binop(
+									Binop {
+										op: second_binop, 
+										lhs: Arc::new(Expr::Binop(Binop {
+											op: first_binop,
+											lhs: Arc::new(lhs.1),
+											rhs: Arc::new(maybe_rhs.1),
+										})), 
+										rhs: parse_expr(tokens)?.1.into(),
+									}
+								)
+							));
+						}
+					}
+					else {
+						return Ok((
+							Type::Infer, 
+							Expr::Binop(
+								Binop {op: first_binop, lhs: lhs.1.into(), rhs: maybe_rhs.1.into() }
+							)
+						));
+					}
+				}
+				else {
+					panicat!(next.loc, "didn't expect {:?} while parsing expression", next);
+				}
+			}
+		}
+		else {
+			expect_token_from(next, BinaryOperator::list())?;
+			unreachable!();
+		}
+	}
+	else {
+		tokens.loc = save;
+		return Ok(lhs);
+	}
+}
+
+fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 	let (ty, rhs);
-	let next = if let Some(c) = current { c } else { tokens.next()? };
+	let next = tokens.next()?;
 	if let Some(int) = next.get_int() {
 		ty = Type::Primitive(Primitive::Int);
 		rhs = Expr::Literal(Literal::Int(int));
@@ -568,16 +720,23 @@ fn parse_expr(current: Option<&Token>, tokens: &mut TokenSlice) -> SynResult<(Ty
 		let loc = tokens.loc;
 		let next = tokens.next()?;
 		expect_token_from(next, &[";", ")", "}"])
-			.unwrap_or_else(|_| panicat!(next.loc, "Parse more complicated expressions"));
+			.unwrap_or_else(|_| panicat!(next.loc, "Parse more complicated identifiers (indeces, funccalls...)"));
 		tokens.loc = loc;
 		ty = Type::Infer;
 		rhs = Expr::Ident(ident.to_owned());
 	}
-	else {
-		dbg!(&tokens.tokens[tokens.loc..]);
-		dbg!(&next);
+	else if let Some(punct) = next.get_punct() {
+		match punct {
+			"(" => todoat!(next.loc, "parse nested expression"),
+			"[" => todoat!(next.loc, "parse indexing"),
+			other => panicat!(next.loc, "unexpected punctuation in the place of an expression: `{}`", other),
+		}
+		// match punct {
 
-		todoat!(next.loc, "parse some random expression as rhs: {:?}", next);
+		// }
+	}
+	else {
+		panicat!(next.loc, "Unexpected {:?} when trying to parse an expression.", next);
 	}
 	return Ok((ty, rhs));
 }
@@ -613,6 +772,8 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 		r
 	};
 
+	let after_decl = tokens.loc - 1;
+
 	let assign_kind = assign_kind.unwrap();
 	let assert_assign = |at| {
 		if assign_kind != at {
@@ -621,13 +782,23 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 	};
 
 	// parse an object declaration (function etc...)
-	{
+	'object: loop {
 		// NOTE: parsing objects will return with a ConstDeclare
 		match next.get_punct() {
 			// function
 			// FIXME: this does not allow for tuples, make it check for after 
 			// parens for the '->'
 			Some("(") => {
+				// this lets us parse stuff like: 
+				// x := (1 + 1);
+				// or tuples
+				if let Ok(tok) = tokens.get_after_close_paren(")") {
+					match tok.get_punct() {
+						Some("->") | Some("{") => (),
+						_ => break 'object,
+ 					}
+				}
+
 				// TODO: parse function args
 				let args = if !tokens[0].is_punct(")") {
 					let r = parse_struct_fields(tokens)?;
@@ -693,11 +864,14 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 			Some(other) => panicat!(next.loc, "Keyword `{}` cannot be used when assigning an object.", other),
 			None => (),
 		}
+
+		break;
 	}
 
 	// anything else
 
-	let (expr_ty, rhs) = parse_expr(Some(&next), tokens)?;
+	tokens.loc = after_decl;
+	let (expr_ty, rhs) = parse_expr(tokens)?;
 
 	let ty = match (decl_ty, expr_ty) {
 		(Type::Infer, Type::Infer) => Type::Infer,
@@ -784,7 +958,7 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
 			"if" | "switch" | "while" | "loop" => todoat!(next.loc, "parse if and stuff statements"),
 			"extern" => todoat!(next.loc, "parse naked import statement"),
 			"return" => {
-				let (ty, expr) = parse_expr(None, tokens)?;
+				let (ty, expr) = parse_expr(tokens)?;
 				tokens.next_expect(";")?;
 				Ok(Statement::Return(ty, expr).between(first_loc, tokens.current_loc()?))
 			}

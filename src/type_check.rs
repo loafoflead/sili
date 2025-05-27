@@ -221,6 +221,7 @@ fn typeof_expr(state: &TypeState, expr: &Expr, scope: usize) -> Option<Type> {
 				return None;
 			}
 		}
+		Expr::Binop(_) => todo!("typecheck binop"),
 		Expr::Literal(literal) => {
 			return Some(literal.ty());
 		}

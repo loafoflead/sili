@@ -243,7 +243,7 @@ impl Token {
         })
     }
 
-    fn ty(ty: TokenType, line: usize, column_start: usize, column_end: usize) -> Self {
+    pub fn ty(ty: TokenType, line: usize, column_start: usize, column_end: usize) -> Self {
         Self {
             ty,
             loc: Location::new(line, column_start, column_end),
