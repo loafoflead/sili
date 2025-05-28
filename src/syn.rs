@@ -270,6 +270,16 @@ pub struct Binop {
 	rhs: Arc<Expr>,
 }
 
+impl Binop {
+	fn new(op: BinaryOperator, lhs: Expr, rhs: Expr) -> Self {
+		Self {
+			op,
+			lhs: Arc::new(lhs),
+			rhs: Arc::new(rhs),
+		}
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub enum BinaryOperator {
 	Add, Sub,
@@ -278,6 +288,8 @@ pub enum BinaryOperator {
 }
 
 impl BinaryOperator {
+	const MIN_PRECEDENCE: usize = 0;
+	
 	fn from_str(s: &str) -> Option<Self> {
 		Some(match s {
 			"+" =>  Self::Add,
@@ -291,6 +303,15 @@ impl BinaryOperator {
 			">" =>  Self::Gt,
 			_ => return None,
 		})
+	}
+	
+	fn from_token(tok: &Token) -> Option<Self> {
+		if let Some(punct) = tok.get_punct() {
+			Self::from_str(punct)
+		}
+		else {
+			None
+		}
 	}
 
 	fn precedence(&self) -> usize {
@@ -532,7 +553,7 @@ fn parse_func_call_args(tokens: &mut TokenSlice) -> SynResult<FuncCallParams> {
 			tokens.loc += 1;
 			continue;
 		}
-		else if let Ok((_ty, value)) = parse_expr(tokens) {
+		else if let Ok(value) = parse_expr(tokens) {
 			exprs.push(value)
 		}
 		else {
@@ -618,8 +639,56 @@ fn parse_type(tokens: &mut TokenSlice) -> SynResult<Type> {
 	}
 }
 
-fn parse_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
+// algorithm from https://en.wikipedia.org/wiki/Operator-precedence_parser
+fn parse_expr_recurse(tokens: &mut TokenSlice, mut lhs: Expr, minimum_precedence: usize) -> SynResult<Expr> {
+	let mut save = tokens.loc;
+	let mut next = tokens.next()?;
+	if let None = BinaryOperator::from_token(next) {
+		tokens.loc = save;
+	}
+	'outer: while let Some(binop) = BinaryOperator::from_token(next) {
+		if binop.precedence() >= minimum_precedence {
+			// dbg!(&next);
+			let mut rhs = parse_primary_expr(tokens)?;
+			// let Ok(mut rhs) = parse_primary_expr(tokens) else {
+				// tokens.loc = pre_prim;
+				// lhs = Expr::Binop(Binop::new(binop, lhs, rhs));
+				// break 'outer;
+			// };
+			save = tokens.loc;
+			next = tokens.next()?;
+			if let None = BinaryOperator::from_token(next) {
+				tokens.loc = save;
+			}
+			while let Some(binop2) = BinaryOperator::from_token(next) {
+				if binop2.precedence() > binop.precedence() {
+					tokens.loc -= 1;
+					rhs = parse_expr_recurse(tokens, rhs, binop.precedence() + if binop2.precedence() > binop.precedence() { 1 } else { 0 })?;
+					next = tokens.next()?;
+				}
+				else {
+					break;
+				}
+			}
+			
+			dbg!(&lhs, &rhs);
+			lhs = Expr::Binop(Binop::new(binop, lhs, rhs));
+		}
+		else {
+			break;
+		}
+	}
+	
+	Ok(lhs)
+}
+
+fn parse_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
 	let lhs = parse_primary_expr(tokens)?;
+	let r = parse_expr_recurse(tokens, lhs, BinaryOperator::MIN_PRECEDENCE)?;
+	panic!("{:#?}", r);
+	
+	/* 
+	
 	let save = tokens.loc;
 	let next = tokens.next()?;
 	if let Some(punct) = next.get_punct() {
@@ -689,30 +758,25 @@ fn parse_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 	else {
 		tokens.loc = save;
 		return Ok(lhs);
-	}
+	} */
 }
 
-fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
-	let (ty, rhs);
+fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
+	let rhs;
 	let next = tokens.next()?;
 	if let Some(int) = next.get_int() {
-		ty = Type::Primitive(Primitive::Int);
 		rhs = Expr::Literal(Literal::Int(int));
 	}
 	else if let Some(float) = next.get_float() {
-		ty = Type::Primitive(Primitive::Float);
 		rhs = Expr::Literal(Literal::Float(float));
 	}
 	else if let Some(string) = next.get_string() {
-		ty = Type::Primitive(Primitive::String);
 		rhs = Expr::Literal(Literal::String(string));
 	}
 	else if let Some("true") = next.get_ident() {
-		ty = Type::Primitive(Primitive::Bool);
 		rhs = Expr::Literal(Literal::Bool(true));
 	}
 	else if let Some("false") = next.get_ident() {
-		ty = Type::Primitive(Primitive::Bool);
 		rhs = Expr::Literal(Literal::Bool(false));
 	}
 	else if let Some(ident) = next.get_ident() {
@@ -721,7 +785,6 @@ fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 		expect_token_from(next, &[";", ")", "}"])
 			.unwrap_or_else(|_| panicat!(next.loc, "Parse more complicated identifiers (indeces, funccalls...)"));
 		tokens.loc = loc;
-		ty = Type::Infer;
 		rhs = Expr::Ident(ident.to_owned());
 	}
 	else if let Some(punct) = next.get_punct() {
@@ -737,7 +800,7 @@ fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 	else {
 		panicat!(next.loc, "Unexpected {:?} when trying to parse an expression.", next);
 	}
-	return Ok((ty, rhs));
+	return Ok(rhs);
 }
 
 fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
@@ -870,9 +933,8 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 	// anything else
 
 	tokens.loc = after_decl;
-	dbg!(&tokens.tokens[tokens.loc..]);
-	let (expr_ty, rhs) = parse_expr(tokens)?;
-	dbg!(&tokens.tokens[tokens.loc..]);
+	let rhs = parse_expr(tokens)?;
+	let expr_ty = Type::Infer; // TODO: remove this entire thing of logic
 
 	let ty = match (decl_ty, expr_ty) {
 		(Type::Infer, Type::Infer) => Type::Infer,
@@ -959,7 +1021,8 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
 			"if" | "switch" | "while" | "loop" => todoat!(next.loc, "parse if and stuff statements"),
 			"extern" => todoat!(next.loc, "parse naked import statement"),
 			"return" => {
-				let (ty, expr) = parse_expr(tokens)?;
+				let expr = parse_expr(tokens)?;
+				let ty = Type::Infer; // TODO: remove this need for a type?
 				tokens.next_expect(";")?;
 				Ok(Statement::Return(ty, expr).between(first_loc, tokens.current_loc()?))
 			}
