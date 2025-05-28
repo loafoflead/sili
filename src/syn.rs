@@ -638,19 +638,17 @@ fn parse_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 				let next = tokens.next()?;
 				if let Some(punct) = next.get_punct() {
 					if let Some(second_binop) = BinaryOperator::from_str(punct) {
-						// second has higher precedence
-						// e.g: 1 + 2 * 3 --> 1 + (2 * 3)
-						if first_binop < second_binop {
+						// e.g: 1 * 2 + 3 --> (1 * 2) + 3
+						if first_binop >= second_binop {
 							tokens.loc = pre_expr;
 							return Ok((
-								Type::Infer, 
+								Type::Infer,
 								Expr::Binop(
 									Binop {op: first_binop, lhs: Arc::new(lhs.1), rhs: Arc::new(parse_expr(tokens)?.1) }
 								)
 							));
 						}
-						// second has lower precedence
-						// e.g: 1 * 2 + 3 --> (1 * 2) + 3
+						// e.g: 1 + 2 * 3 --> 1 + (2 * 3)
 						else {
 							return Ok((
 								Type::Infer, 
@@ -669,6 +667,7 @@ fn parse_expr(tokens: &mut TokenSlice) -> SynResult<(Type, Expr)> {
 						}
 					}
 					else {
+						tokens.loc = post_expr;
 						return Ok((
 							Type::Infer, 
 							Expr::Binop(
@@ -871,7 +870,9 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 	// anything else
 
 	tokens.loc = after_decl;
+	dbg!(&tokens.tokens[tokens.loc..]);
 	let (expr_ty, rhs) = parse_expr(tokens)?;
+	dbg!(&tokens.tokens[tokens.loc..]);
 
 	let ty = match (decl_ty, expr_ty) {
 		(Type::Infer, Type::Infer) => Type::Infer,

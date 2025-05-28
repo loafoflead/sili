@@ -6,7 +6,7 @@ mod syn;
 mod tokeniser;
 mod type_check;
 
-const PUNCTS: &[&str] = &["[", "]", "(", ")", "{", "}", ";", ":", "=", ",", ".", "->", "<", ">", "-", "+", "*", "/", "{]*=*[}"];
+const PUNCTS: &[&str] = &["[", "]", "(", ")", "{", "}", ";", ":", "=", ",", ".", "->", "==", "<=", ">=", "<", ">", "-", "+", "*", "/", "{]*=*[}"];
 const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
 
 fn create_tokeniser() -> tokeniser::Tokeniser {
@@ -78,7 +78,7 @@ Foo :: struct {
 }
 
 main :: (bar: Foo) -> i32 {
-    which :: 1 * 1 + 5;
+    which :: 1 * 1 + 5 <= 5 * 12 + 19;
     return a;
 }
 "#;
