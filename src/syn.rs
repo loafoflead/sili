@@ -160,6 +160,11 @@ impl<'outer, 'inner: 'outer> TokenSlice<'inner> {
 		self.loc += 1;
 		r.ok_or(SyntaxError::EndOfTokens.at_token_or_default(r))
 	}
+	
+	fn peek(&'outer self) -> SynResult<&'inner Token> {
+		let tok = self.tokens.get(self.loc);
+		tok.ok_or(SyntaxError::EndOfTokens.at_token_or_default(tok))
+	}
 
 	fn expect(&self, s: &str) -> bool {
 		let token = self.tokens.get(0).ok_or(SyntaxError::EndOfTokens).unwrap();
@@ -263,11 +268,27 @@ pub enum Expr {
 	Binop(Binop),
 }
 
+impl Display for Expr {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+		match self {
+			Self::Literal(lit) => write!(f, "{}", lit),
+			Self::Binop(binop) => write!(f, "{}", binop),
+			other => write!(f, "{:?}", other),
+		}
+	}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binop {
 	op: BinaryOperator,
 	lhs: Arc<Expr>,
 	rhs: Arc<Expr>,
+}
+
+impl Display for Binop {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+		write!(f, "({} {} {})", self.lhs, self.op, self.rhs)
+	}
 }
 
 impl Binop {
@@ -282,16 +303,36 @@ impl Binop {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub enum BinaryOperator {
+	Damn,
 	Add, Sub,
 	Mul, Div,
 	Eq, Lt, Gt, LtEq, GtEq,
 }
 
+impl Display for BinaryOperator {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+		let s = match self {
+			Self::Damn => ">:(",
+			Self::Add => "+",
+			Self::Sub => "-",
+			Self::Mul => "*",
+			Self::Div => "/", 
+			Self::Eq  => "==",
+			Self::Lt  => "<",
+			Self::Gt  => ">",
+			Self::LtEq => "<=",
+			Self::GtEq => ">=",
+		};
+		write!(f, "{}", s)
+	}
+}
+
 impl BinaryOperator {
-	const MIN_PRECEDENCE: usize = 0;
+	const MIN_PRECEDENCE: usize = 1;
 	
 	fn from_str(s: &str) -> Option<Self> {
 		Some(match s {
+			// ">:(" => Self::Damn,
 			"+" =>  Self::Add,
 			"-" =>  Self::Sub,
 			"*" =>  Self::Mul,
@@ -316,6 +357,7 @@ impl BinaryOperator {
 
 	fn precedence(&self) -> usize {
 		match self {
+			Self::Damn => 0,
 			Self::Add | Self::Sub => 1,
 			Self::Mul | Self::Div => 2,
 			Self::Eq | Self::Lt | Self::Gt | Self::LtEq | Self::GtEq => 3,
@@ -323,7 +365,7 @@ impl BinaryOperator {
 	}
 
 	const fn list() -> &'static [&'static str] {
-		&["+", "-", "*", "/", "==", "<=", ">=", "<", ">"]
+		&["+", "-", "*", "/", "==", "<=", ">=", "<", ">", /* ">:(" */]
 	}
 }
 
@@ -500,6 +542,18 @@ impl Literal {
 	}
 }
 
+
+impl Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+		match self {
+			Self::Int(int) => write!(f, "{}", int),
+			Self::Float(float) => write!(f, "{}", float),
+			Self::String(string) => write!(f, "{}", string),
+			Self::Bool(ool) => write!(f, "{}", ool),
+		}
+	}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Assignment {
 	Comptime,
@@ -641,51 +695,64 @@ fn parse_type(tokens: &mut TokenSlice) -> SynResult<Type> {
 
 // algorithm from https://en.wikipedia.org/wiki/Operator-precedence_parser
 fn parse_expr_recurse(tokens: &mut TokenSlice, mut lhs: Expr, minimum_precedence: usize) -> SynResult<Expr> {
-	let mut save = tokens.loc;
-	let mut next = tokens.next()?;
-	if let None = BinaryOperator::from_token(next) {
-		tokens.loc = save;
+	eprintln!("{minimum_precedence}: Im called!!!!!!!!");
+	let mut next = tokens.peek()?;
+	
+	while BinaryOperator::from_token(next).unwrap_or(BinaryOperator::Damn).precedence() >= minimum_precedence {
+		let op = BinaryOperator::from_token(next).unwrap();
+		_ = tokens.next()?;
+		let mut rhs = parse_primary_expr(tokens)?;
+		next = tokens.peek()?;
+		while BinaryOperator::from_token(next).unwrap_or(BinaryOperator::Damn).precedence() >= op.precedence() {
+			let op2 = BinaryOperator::from_token(next).unwrap();
+			rhs = parse_expr_recurse(tokens, rhs, op.precedence() + if op2.precedence() > op.precedence() { 1 } else { 0 })?;
+			next = tokens.peek()?;
+		}
+		lhs = Expr::Binop(Binop::new(op, lhs, rhs));
 	}
-	'outer: while let Some(binop) = BinaryOperator::from_token(next) {
-		if binop.precedence() >= minimum_precedence {
+	
+	
+	// 'outer: while let Some(binop) = BinaryOperator::from_token(next) {
+		// eprintln!("{minimum_precedence}: BEGIN WHILE {} ({}) -- lhs: {lhs}", binop, binop.precedence());
+		// if binop.precedence() >= minimum_precedence {
+			// _ = tokens.next()?;
 			// dbg!(&next);
-			let mut rhs = parse_primary_expr(tokens)?;
+			// let mut rhs = parse_primary_expr(tokens)?;
 			// let Ok(mut rhs) = parse_primary_expr(tokens) else {
 				// tokens.loc = pre_prim;
 				// lhs = Expr::Binop(Binop::new(binop, lhs, rhs));
 				// break 'outer;
 			// };
-			save = tokens.loc;
-			next = tokens.next()?;
-			if let None = BinaryOperator::from_token(next) {
-				tokens.loc = save;
-			}
-			while let Some(binop2) = BinaryOperator::from_token(next) {
-				if binop2.precedence() > binop.precedence() {
-					tokens.loc -= 1;
-					rhs = parse_expr_recurse(tokens, rhs, binop.precedence() + if binop2.precedence() > binop.precedence() { 1 } else { 0 })?;
-					next = tokens.next()?;
-				}
-				else {
-					break;
-				}
-			}
+			// next = tokens.peek()?;
+			// while let Some(binop2) = BinaryOperator::from_token(next) {
+				// FIXME: >= means assumes every operator is right associative
+				// if binop2.precedence() >= binop.precedence() {
+					// eprintln!("REC WITH: {}", binop2);
+					// rhs = parse_expr_recurse(tokens, rhs, )?;
+					// next = tokens.peek()?;
+				// }
+				// else {
+					// if minimum_precedence == 2 { panic!("{}", binop2) }
+					// break;
+				// }
+			// }
 			
-			dbg!(&lhs, &rhs);
-			lhs = Expr::Binop(Binop::new(binop, lhs, rhs));
-		}
-		else {
-			break;
-		}
-	}
+			// lhs = Expr::Binop(Binop::new(binop, lhs, rhs));
+			// eprintln!("{minimum_precedence}: END OF WHILELOOP {lhs}");
+		// }
+		// else {
+			// break;
+		// }
+	// }
 	
+	eprintln!("{}: {}", minimum_precedence, lhs);
 	Ok(lhs)
 }
 
 fn parse_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
 	let lhs = parse_primary_expr(tokens)?;
 	let r = parse_expr_recurse(tokens, lhs, BinaryOperator::MIN_PRECEDENCE)?;
-	panic!("{:#?}", r);
+	panic!("{}", r);
 	
 	/* 
 	
