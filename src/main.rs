@@ -7,7 +7,7 @@ mod tokeniser;
 mod type_check;
 
 const PUNCTS: &[&str] = &["[", "]", "(", ")", "{", "}", ";", ":", "=", ",", ".", "->", "==", "<=", ">=", "<", ">", "-", "+", "*", "/", "{]*=*[}"];
-const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext"];
+const KWORDS: &[&str] = &["struct", "enum", "if", "else", "return", "ext", "fn"];
 
 fn create_tokeniser() -> tokeniser::Tokeniser {
     tokeniser::Tokeniser {
@@ -30,7 +30,7 @@ name :: "hello";
 boolean_f :: false;
 boolean_t :: true;
 
-main :: () -> i32 {
+main :: fn() -> i32 {
     a :: 5;
     b :: 69420;
 }
@@ -47,9 +47,9 @@ fn function_arguments_and_fields() {
 
     let snippet = 
 r#"
-foo :: (input: string, height: f32) {}
+foo :: fn(input: string, height: f32) {}
 
-main :: () -> string {
+main :: fn() -> string {
     a: i32 : 5;
     foo("hello", 7);
     return 5;
@@ -72,13 +72,13 @@ fn main() {
 
     let snippet = 
 r#"
-Foo :: struct {
-    height: Foo,
-    age: i32,
+add :: fn(x: int, y: int) -> int {
+	return x + y;
 }
 
-main :: (bar: Foo) -> i32 {
-    which :: 1 * 1 + 5 <= 5 * 12 + 19;
+main :: fn(bar: Foo) -> i32 {
+    which :: 1;
+	x := add(1, 2);
     return a;
 }
 "#;

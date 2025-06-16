@@ -693,6 +693,19 @@ fn parse_type(tokens: &mut TokenSlice) -> SynResult<Type> {
 	}
 }
 
+fn parse_funccall(tokens: &mut TokenSlice, ident: &str) -> SynResult<FuncCall> {
+	let passed = if !tokens[0].is_punct(")") {
+		let r = parse_func_call_args(tokens)?;
+		tokens.next_expect(")")?;
+		r
+	} else {
+		let _ = tokens.next()?;
+		FuncCallParams::Unnamed(vec![])
+	};
+
+	Ok(FuncCall { ident: ident.to_owned(), passed })
+}
+
 // algorithm from https://en.wikipedia.org/wiki/Operator-precedence_parser
 fn parse_expr_recurse(tokens: &mut TokenSlice, mut lhs: Expr, minimum_precedence: usize) -> SynResult<Expr> {
 	eprintln!("{minimum_precedence}: Im called!!!!!!!!");
@@ -752,80 +765,7 @@ fn parse_expr_recurse(tokens: &mut TokenSlice, mut lhs: Expr, minimum_precedence
 fn parse_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
 	let lhs = parse_primary_expr(tokens)?;
 	let r = parse_expr_recurse(tokens, lhs, BinaryOperator::MIN_PRECEDENCE)?;
-	panic!("{}", r);
-	
-	/* 
-	
-	let save = tokens.loc;
-	let next = tokens.next()?;
-	if let Some(punct) = next.get_punct() {
-		match punct {
-			";" | ")" | "}" => {
-				tokens.loc = save;
-				return Ok(lhs);
-			}
-			_ => ()
-		}
-		if let Some(first_binop) = BinaryOperator::from_str(punct) {
-			let pre_expr = tokens.loc;
-			let maybe_rhs = parse_primary_expr(tokens)?;
-			let post_expr = tokens.loc;
-			{
-				let next = tokens.next()?;
-				if let Some(punct) = next.get_punct() {
-					if let Some(second_binop) = BinaryOperator::from_str(punct) {
-						// e.g: 1 * 2 + 3 --> (1 * 2) + 3
-						if first_binop >= second_binop {
-							tokens.loc = pre_expr;
-							return Ok((
-								Type::Infer,
-								Expr::Binop(
-									Binop {op: first_binop, lhs: Arc::new(lhs.1), rhs: Arc::new(parse_expr(tokens)?.1) }
-								)
-							));
-						}
-						// e.g: 1 + 2 * 3 --> 1 + (2 * 3)
-						else {
-							return Ok((
-								Type::Infer, 
-								Expr::Binop(
-									Binop {
-										op: second_binop, 
-										lhs: Arc::new(Expr::Binop(Binop {
-											op: first_binop,
-											lhs: Arc::new(lhs.1),
-											rhs: Arc::new(maybe_rhs.1),
-										})), 
-										rhs: parse_expr(tokens)?.1.into(),
-									}
-								)
-							));
-						}
-					}
-					else {
-						tokens.loc = post_expr;
-						return Ok((
-							Type::Infer, 
-							Expr::Binop(
-								Binop {op: first_binop, lhs: lhs.1.into(), rhs: maybe_rhs.1.into() }
-							)
-						));
-					}
-				}
-				else {
-					panicat!(next.loc, "didn't expect {:?} while parsing expression", next);
-				}
-			}
-		}
-		else {
-			expect_token_from(next, BinaryOperator::list())?;
-			unreachable!();
-		}
-	}
-	else {
-		tokens.loc = save;
-		return Ok(lhs);
-	} */
+	Ok(r)
 }
 
 fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
@@ -849,10 +789,15 @@ fn parse_primary_expr(tokens: &mut TokenSlice) -> SynResult<Expr> {
 	else if let Some(ident) = next.get_ident() {
 		let loc = tokens.loc;
 		let next = tokens.next()?;
-		expect_token_from(next, &[";", ")", "}"])
-			.unwrap_or_else(|_| panicat!(next.loc, "Parse more complicated identifiers (indeces, funccalls...)"));
-		tokens.loc = loc;
-		rhs = Expr::Ident(ident.to_owned());
+		match next.get_punct() {
+			Some("(") => 
+				rhs = Expr::FuncCall(parse_funccall(tokens, ident)?),
+			Some("[") => todoat!(next.loc, "parse indexing operator"),
+			_ => {
+				tokens.loc = loc;
+				rhs = Expr::Ident(ident.to_owned());				
+			}
+		}
 	}
 	else if let Some(punct) = next.get_punct() {
 		match punct {
@@ -917,16 +862,29 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 			// function
 			// FIXME: this does not allow for tuples, make it check for after 
 			// parens for the '->'
-			Some("(") => {
-				// this lets us parse stuff like: 
-				// x := (1 + 1);
-				// or tuples
-				if let Ok(tok) = tokens.get_after_close_paren(")") {
-					match tok.get_punct() {
-						Some("->") | Some("{") => (),
-						_ => break 'object,
- 					}
-				}
+			Some("(") => todoat!(next.loc, "Parse tuple assignment"),
+			Some("{") => {
+				todoat!(next.loc, "block assign");
+			}
+			Some(other) => panicat!(next.loc, "`{}` is not correct assignment syntax", other),
+			None => (),
+		}
+
+		match next.get_keyword() {
+			Some("struct") => {
+				tokens.next_expect("{")?;
+				let struc = parse_struct_fields(tokens)?;
+				tokens.next_expect("}")?;
+
+				assert_assign(Assignment::Comptime);
+
+				return Ok(Statement::TypeDeclaration {
+					ident: ident.to_owned(),
+					ty: Object::Struct(struc)
+				}.between(first_loc, tokens.current_loc()?));
+			}
+			Some("fn") => {
+				tokens.next_expect("(")?;
 
 				// TODO: parse function args
 				let args = if !tokens[0].is_punct(")") {
@@ -967,26 +925,6 @@ fn parse_declaration(ident: Ident, tokens: &mut TokenSlice) -> SynResult<Stateme
 				return Ok(
 					ret
 				);
-			}
-			Some("{") => {
-				todoat!(next.loc, "block assign");
-			}
-			Some(other) => panicat!(next.loc, "`{}` is not correct assignment syntax", other),
-			None => (),
-		}
-
-		match next.get_keyword() {
-			Some("struct") => {
-				tokens.next_expect("{")?;
-				let struc = parse_struct_fields(tokens)?;
-				tokens.next_expect("}")?;
-
-				assert_assign(Assignment::Comptime);
-
-				return Ok(Statement::TypeDeclaration {
-					ident: ident.to_owned(),
-					ty: Object::Struct(struc)
-				}.between(first_loc, tokens.current_loc()?));
 			}
 			Some("enum") => todoat!(next.loc, "parse enum"),
 			Some("import") => todoat!(next.loc, "parse import assignment"),
@@ -1061,19 +999,9 @@ fn parse_stmt(tokens: &mut TokenSlice) -> SynResult<StatementLoc> {
 		}
 		else if next.is_punct("(") {
 			// ident ( <...>
-			let passed = if !tokens[0].is_punct(")") {
-				let r = parse_func_call_args(tokens)?;
-				tokens.next_expect(")")?;
-				r
-			} else {
-				let _ = tokens.next()?;
-				FuncCallParams::Unnamed(vec![])
-			};
-
-			tokens.next_expect(";")
-				.unwrap_or_else(|_| panicat!(next.loc, "allow for chaining function call statement"));
-
-			Ok(Statement::FuncCall(FuncCall { ident: ident.to_owned(), passed }).between(first_loc, tokens.current_loc()?))
+			let funccall = parse_funccall(tokens, ident.as_ref())?;
+			tokens.next_expect(";")?;
+			Ok(Statement::FuncCall(funccall).between(first_loc, tokens.current_loc()?))
 		}
 		else if next.is_punct(",") {
 			// ident , <...>
